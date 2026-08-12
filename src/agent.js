@@ -2,11 +2,13 @@ import { runClaude } from "./claude.js";
 import { runCodex } from "./codex.js";
 import { ConfigError } from "./errors.js";
 import { runOpenCode } from "./opencode.js";
+import { runPi } from "./pi.js";
 
 const RUNNERS = {
   codex: runCodex,
   opencode: runOpenCode,
   claude: runClaude,
+  pi: runPi,
 };
 
 export function getAgentRunner(provider) {

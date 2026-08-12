@@ -3,8 +3,10 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { getAgentRunner } from "../src/agent.js";
 import { parseClaudeOutput, runClaude } from "../src/claude.js";
 import { parseOpenCodeDiagnostic, parseOpenCodeEvents, runOpenCode } from "../src/opencode.js";
+import { parsePiEvents, runPi } from "../src/pi.js";
 import { parseAgentVerdict, runVerification } from "../src/verifier.js";
 import { createTaskInteractively } from "../src/wizard.js";
 
@@ -43,6 +45,25 @@ test("Claude JSON output exposes session and result", () => {
   );
   assert.equal(parsed.sessionId, "claude-123");
   assert.equal(parsed.finalMessage, "Implemented");
+});
+
+test("agent registry exposes Pi", () => {
+  assert.equal(getAgentRunner("pi"), runPi);
+});
+
+test("Pi JSON events expose session and final text", () => {
+  const parsed = parsePiEvents(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "pi-123", cwd: "/tmp" }),
+      JSON.stringify({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "Implemented" }] },
+      }),
+    ].join("\n"),
+  );
+  assert.equal(parsed.sessionId, "pi-123");
+  assert.equal(parsed.finalMessage, "Implemented");
+  assert.equal(parsed.events.length, 2);
 });
 
 test("OpenCode adapter builds non-interactive resume arguments", async () => {
@@ -139,6 +160,44 @@ test("Claude adapter maps read-only verification to plan mode", async () => {
   assert.deepEqual(args.slice(0, 5), ["-p", "--output-format", "json", "--permission-mode", "plan"]);
   assert.ok(args.includes("--resume"));
   assert.equal(result.sessionId, "claude-2");
+});
+
+test("Pi adapter builds non-interactive read-only resume arguments", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "loop-pi-"));
+  const executable = await fakeAgent(directory);
+  const argsPath = path.join(directory, "args");
+  process.env.LOOP_AGENT_ARGS = argsPath;
+  process.env.LOOP_AGENT_OUTPUT = [
+    JSON.stringify({ type: "session", version: 3, id: "pi-2", cwd: directory }),
+    JSON.stringify({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+    }),
+  ].join("\n");
+  const result = await runPi({
+    cwd: directory,
+    prompt: "review it",
+    sandbox: "read-only",
+    model: "openai/gpt-test",
+    sessionId: "pi-1",
+    timeoutSeconds: 5,
+    executable,
+  });
+  const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+  assert.deepEqual(args, [
+    "--mode",
+    "json",
+    "--model",
+    "openai/gpt-test",
+    "--session",
+    "pi-1",
+    "--tools",
+    "read,grep,find,ls",
+    "review it",
+  ]);
+  assert.equal(result.provider, "pi");
+  assert.equal(result.sessionId, "pi-2");
+  assert.equal(result.finalMessage, "done");
 });
 
 test("agent verdict parser accepts fenced structured output", () => {

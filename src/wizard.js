@@ -5,6 +5,7 @@ const providerChoices = [
   { name: "OpenAI Codex CLI", value: "codex" },
   { name: "OpenCode", value: "opencode" },
   { name: "Claude Code", value: "claude" },
+  { name: "Pi", value: "pi" },
 ];
 
 const required = (value) => (value.trim() ? true : "This value is required");

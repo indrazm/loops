@@ -99,6 +99,18 @@ test("legacy codex tasks normalize to the generic agent schema", () => {
   assert.deepEqual(task.verification[0], { type: "command", name: "tests", command: "npm test" });
 });
 
+test("Pi is accepted for implementation and verification", () => {
+  const task = validateTask({
+    name: "pi-task",
+    goal: "Build it with Pi",
+    agent: { provider: "pi", model: "openai/gpt-test" },
+    verification: [{ type: "agent", name: "review", provider: "pi", prompt: "Check the implementation" }],
+  });
+  assert.equal(task.agent.provider, "pi");
+  assert.equal(task.agent.model, "openai/gpt-test");
+  assert.equal(task.verification[0].provider, "pi");
+});
+
 test("agent verification gates are normalized read-only", () => {
   const task = validateTask({
     name: "reviewed",

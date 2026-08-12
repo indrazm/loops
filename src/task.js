@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { ConfigError } from "./errors.js";
 
-export const AGENT_PROVIDERS = Object.freeze(["codex", "opencode", "claude"]);
+export const AGENT_PROVIDERS = Object.freeze(["codex", "opencode", "claude", "pi"]);
 
 export const DEFAULT_TASK = Object.freeze({
   limits: {

@@ -7,7 +7,9 @@ export function buildPrompt({ task, iteration, feedback }) {
     `Iteration: ${iteration} of ${task.limits.maxIterations}`,
   ];
   if (feedback) parts.push(`External verification from the previous iteration:\n${feedback}`);
-  parts.push("Implement the goal and fix any failures. Do not merely describe them. Run relevant checks before finishing.");
+  parts.push(
+    "Implement the goal and fix any failures. Do not merely describe them. Run relevant checks before finishing.",
+  );
   return parts.join("\n\n");
 }
 
@@ -17,7 +19,7 @@ export function buildFeedback({ iteration, agent, codex, verification, gitStatus
   const lines = [
     `# Iteration ${iteration} feedback`,
     "",
-    "## Codex process",
+    "## Agent process",
     "",
     `- Provider: ${harness.provider ?? "codex"}`,
     `- Exit code: ${harness.exitCode}`,
@@ -25,14 +27,17 @@ export function buildFeedback({ iteration, agent, codex, verification, gitStatus
   ];
   if (harness.signal) lines.push(`- Signal: ${harness.signal}`);
   if (harness.processError) lines.push(`- Process error: ${harness.processError}`);
-  if (harness.finalMessage) lines.push("", "### Final agent message", "", truncate(harness.finalMessage, maxOutputChars));
+  if (harness.finalMessage)
+    lines.push("", "### Final agent message", "", truncate(harness.finalMessage, maxOutputChars));
   lines.push("", "## Git status", "", "```text", truncate(gitStatus || "(clean)", maxOutputChars), "```");
   lines.push("", "## Failed verification", "");
-  if (!failed.length) lines.push("No verification gate failed; the Codex process itself did not complete successfully.");
+  if (!failed.length)
+    lines.push("No verification gate failed; the agent process itself did not complete successfully.");
   for (const check of failed) {
-    const descriptor = check.type === "agent"
-      ? `Agent harness: \`${check.provider}\`\nCriterion: ${check.prompt}`
-      : `Command: \`${check.command.replaceAll("`", "\\`")}\``;
+    const descriptor =
+      check.type === "agent"
+        ? `Agent harness: \`${check.provider}\`\nCriterion: ${check.prompt}`
+        : `Command: \`${check.command.replaceAll("`", "\\`")}\``;
     lines.push(
       `### ${check.name}`,
       "",
