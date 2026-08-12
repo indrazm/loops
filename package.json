@@ -1,0 +1,26 @@
+{
+  "name": "loops",
+  "version": "0.3.0",
+  "description": "A bounded, externally verified loop around coding-agent CLIs",
+  "type": "module",
+  "bin": {
+    "loops": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/*.js",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "biome:check": "biome check ."
+  },
+  "engines": {
+    "node": ">=20.17"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^8.5.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7"
+  }
+}
