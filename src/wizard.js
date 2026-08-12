@@ -98,7 +98,7 @@ export async function createTaskInteractively(prompts = { confirm, input, number
         choices: [
           { name: "Keep changes in the worktree", value: "none" },
           { name: "Create a Git commit automatically", value: "commit" },
-          { name: "Commit, push, and create a GitHub pull request", value: "pr" },
+          { name: "Create and monitor a GitHub pull request until merge-ready", value: "pr" },
         ],
       })
     : "none";

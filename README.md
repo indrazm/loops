@@ -173,7 +173,7 @@ Supported modes:
 
 - `none` — default; leave changes uncommitted in the worktree.
 - `commit` — create a commit using `delivery.commitMessage`.
-- `pr` — commit, push a unique branch, and run `gh pr create`.
+- `pr` — commit and push a unique branch, use the configured agent to author the PR, then monitor it until merge-ready.
 
 Pull-request configuration:
 
@@ -190,7 +190,9 @@ Pull-request configuration:
 }
 ```
 
-Git and GitHub authentication must already be configured. Delivery failures preserve the worktree, commit, and branch for recovery. Automatic delivery requires an isolated worktree.
+Git and GitHub authentication must already be configured. The implementation provider authors the title and description from the verified diff, monitors checks and review feedback with `gh`, and may prepare local fixes. Loops re-runs every verification gate before committing and pushing those fixes. Monitoring is bounded by `limits.maxIterations` and `limits.timeoutSeconds`.
+
+A PR is complete when checks pass, it has no conflicts or requested changes, required reviews are satisfied, and the delivery agent reports no actionable feedback. Loops never merges the PR. Delivery failures preserve the worktree, commit, branch, PR, and evidence for recovery. Automatic delivery requires an isolated worktree.
 
 ### Compatibility
 
@@ -267,7 +269,7 @@ State writes are atomic. Resume interrupted non-terminal runs with `loops resume
 
 Agents and verification commands run with your local permissions. Command gates use the platform shell. PR delivery pushes with your Git remote and existing `gh` credentials.
 
-Treat task files, repositories, scripts, agent configuration, and extensions as executable code. Use a disposable container or VM for untrusted work and expose only required files, network access, and credentials.
+Treat task files, repositories, scripts, agent configuration, extensions, PR comments, and CI output as untrusted input. Agent-monitored PR delivery reads remote feedback through `gh`; review who can comment on the repository. Use a disposable container or VM for untrusted work and expose only required files, network access, and credentials.
 
 Loops does not manage provider authentication or include authentication files and the full environment in prompts and reports.
 

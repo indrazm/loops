@@ -54,10 +54,25 @@ printf '%s' "$count" > "$FAKE_CODEX_COUNT"
 if [ -n "$FAKE_CODEX_ARGS" ]; then printf '%s\\n' "$@" >> "$FAKE_CODEX_ARGS"; fi
 printf '%s\\n' '{"type":"thread.started","thread_id":"thread-test"}'
 if [ "$FAKE_CODEX_MODE" = "hang" ]; then while :; do sleep 1; done; fi
-if [ "$FAKE_CODEX_MODE" = "pass" ] || [ "$FAKE_CODEX_MODE" = "resume" ] || { [ "$FAKE_CODEX_MODE" = "second-pass" ] && [ "$count" -ge 2 ]; }; then
+if [ "$FAKE_CODEX_MODE" = "pass" ] || [ "$FAKE_CODEX_MODE" = "pr-fix" ] || [ "$FAKE_CODEX_MODE" = "resume" ] || { [ "$FAKE_CODEX_MODE" = "second-pass" ] && [ "$count" -ge 2 ]; }; then
   printf 'ok\\n' > result.txt
 fi
-printf '{"type":"item.completed","item":{"type":"agent_message","text":"attempt %s"}}\\n' "$count"
+prompt=
+for argument in "$@"; do prompt=$argument; done
+case "$prompt" in
+  *"pull-request author"*) final='{"title":"Fixture pull request","body":"Creates and verifies result.txt."}' ;;
+  *"merge-readiness agent"*)
+    if [ "$FAKE_CODEX_MODE" = "pr-fix" ] && [ ! -f review-fix.txt ]; then
+      printf 'review fix\\n' > review-fix.txt
+      final='{"ready":false,"summary":"A review fix was prepared","evidence":["review-fix.txt"]}'
+    else
+      final='{"ready":true,"summary":"The PR is merge-ready","evidence":["CI passed"]}'
+    fi
+    ;;
+  *) final="attempt $count" ;;
+esac
+escaped=$(printf '%s' "$final" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\\n' "$escaped"
 `,
     { mode: 0o755 },
   );
@@ -490,7 +505,7 @@ test("delivery failure is explicit and preserves the verified worktree", async (
   });
 });
 
-test("verified delivery can push a branch and create a pull request", async () => {
+test("agent delivery authors, fixes, verifies, and monitors a pull request", async () => {
   const root = await makeRepository();
   const remote = await mkdtemp(path.join(os.tmpdir(), "loops-remote-"));
   await exec("git", ["init", "--bare", "-q"], { cwd: remote });
@@ -503,8 +518,15 @@ test("verified delivery can push a branch and create a pull request", async () =
   await writeFile(
     fakeGh,
     `#!/bin/sh
-printf '%s\n' "$@" > "$LOOPS_GH_ARGS"
-printf '%s\n' 'https://github.com/example/project/pull/42'
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf '%s\\n' "$@" > "$LOOPS_GH_ARGS"
+  printf '%s\\n' 'https://github.com/example/project/pull/42'
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '%s\\n' '{"url":"https://github.com/example/project/pull/42","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}'
+else
+  printf '%s\\n' "unexpected gh arguments: $*" >&2
+  exit 1
+fi
 `,
     { mode: 0o755 },
   );
@@ -523,14 +545,25 @@ printf '%s\n' 'https://github.com/example/project/pull/42'
   process.env.LOOPS_GH_PATH = fakeGh;
   process.env.LOOPS_GH_ARGS = ghArgs;
   try {
-    await withFakeEnvironment(root, "pass", async () => {
+    await withFakeEnvironment(root, "pr-fix", async () => {
       const context = await createRun(taskPath, { cwd: root });
       const state = await executeRun(context);
       assert.equal(state.status, "success");
       assert.equal(state.delivery.status, "success");
       assert.equal(state.delivery.prUrl, "https://github.com/example/project/pull/42");
+      assert.equal(state.delivery.mergeReady, true);
+      assert.equal(state.delivery.title, "Fixture pull request");
+      assert.equal(state.delivery.attempts.length, 2);
+      assert.equal(state.delivery.attempts[0].verification.passed, true);
       assert.match(state.delivery.branch, /^loops\/fixture-task-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$/);
       await exec("git", ["--git-dir", remote, "rev-parse", `refs/heads/${state.delivery.branch}`]);
+      const deliveredFix = await exec("git", [
+        "--git-dir",
+        remote,
+        "show",
+        `refs/heads/${state.delivery.branch}:review-fix.txt`,
+      ]);
+      assert.equal(deliveredFix.stdout.trim(), "review fix");
       const args = (await readFile(ghArgs, "utf8")).trim().split("\n");
       assert.deepEqual(args.slice(0, 7), ["pr", "create", "--base", base, "--head", state.delivery.branch, "--title"]);
       assert.ok(args.includes("Fixture pull request"));

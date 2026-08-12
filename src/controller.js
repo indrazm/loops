@@ -38,7 +38,7 @@ async function completeRun(state, paths, status) {
   state.status = status;
   state.completedAt = now();
   const successMessage = state.delivery?.prUrl
-    ? "All verification passed and pull request created"
+    ? "All verification passed and pull request is merge-ready"
     : state.delivery?.commitHash
       ? "All verification passed and commit created"
       : "All verification gates passed";
@@ -70,7 +70,7 @@ async function deliverSuccessfulRun(state, paths, task, signal, onProgress) {
   state.activity = {
     ...state.activity,
     phase: "delivering",
-    message: task.delivery.mode === "pr" ? "Creating commit and pull request" : "Creating verified commit",
+    message: task.delivery.mode === "pr" ? "Creating and monitoring pull request" : "Creating verified commit",
     startedAt: now(),
   };
   await saveState(paths, state);
