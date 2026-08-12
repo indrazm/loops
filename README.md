@@ -63,7 +63,7 @@ when its status is `success`. Use the exact run ID with `loops inspect` or `loop
 Do not call `loops cleanup` until successful changes have been preserved or delivered.
 ```
 
-For a complete reusable workflow, this repository also includes the [`operate-loops` Agent Skill](.cursor/skills/operate-loops/SKILL.md). Copy or link that skill directory into the target project's `.cursor/skills/` directory to make it available to agents operating Loops there.
+For a complete reusable workflow, this repository also includes the [`operate-loops` Agent Skill](skills/operate-loops/SKILL.md). Install or link that skill directory into the personal or project skill location used by the agent operating Loops.
 
 ## Interactive setup
 
