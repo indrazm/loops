@@ -216,6 +216,15 @@ A PR is complete when checks pass, it has no conflicts or requested changes, req
 
 Delivery steps, attempts, pull-request URL, and a heartbeat are persisted while monitoring, so `loops list`, `loops inspect`, and `loops watch` expose current progress during long provider or CI waits. Delivery failures preserve the worktree, commit, branch, PR, and evidence for recovery. Automatic delivery requires an isolated worktree.
 
+If PR delivery is interrupted after a verified commit was pushed, reconcile it without rerunning implementation:
+
+```sh
+loops reconcile <run-id>
+loops reconcile <run-id> --pr https://github.com/owner/repository/pull/123
+```
+
+Reconciliation succeeds only when the worktree is clean, its HEAD and the remote branch both equal the persisted verified delivery commit, and the selected PR has that exact head with successful checks and satisfied review requirements. Use `--pr` when a follow-up PR was opened for a commit pushed after the original PR merged.
+
 ### Compatibility
 
 Omitted agent, limit, worktree, session, and delivery fields use the defaults above. The default agent is Codex with `workspace-write` access.
@@ -229,6 +238,7 @@ loops init [task-file] [--interactive | --defaults]
 loops validate <task-file>
 loops run <task-file> [--dry-run] [--no-worktree] [--quiet]
 loops resume <run-id> [--task <task-file>] [--repo <path>] [--quiet]
+loops reconcile <run-id> [--pr <url>] [--repo <path>]
 loops watch <run-id> [--repo <path>] [--quiet]
 loops list [--repo <path>]
 loops inspect <run-id> [--repo <path>]

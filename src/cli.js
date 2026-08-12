@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { confirm, input, select } from "@inquirer/prompts";
-import { createRun, executeRun, planRun, resumeRun } from "./controller.js";
+import { createRun, executeRun, planRun, reconcileRun, resumeRun } from "./controller.js";
 import { ConfigError, LoopError, PreparationError } from "./errors.js";
 import { pathExists, removeWorktree, resolveRepoRoot } from "./git.js";
 import { LiveStatus } from "./status.js";
@@ -42,6 +42,10 @@ Commands:
 
   resume <run-id> [--task <task-file>] [--repo <path>] [--quiet]
       Continue an incomplete, non-terminal run.
+
+  reconcile <run-id> [--pr <url>] [--repo <path>]
+      Recover interrupted PR delivery from persisted verification, the exact
+      pushed commit, and current GitHub checks. Use --pr for a follow-up PR.
 
   watch <run-id> [--repo <path>] [--quiet]
       Monitor a run started by another process.
@@ -240,6 +244,14 @@ async function resume(args) {
   if (state.status !== "success") process.exitCode = state.status === "cancelled" ? 130 : 1;
 }
 
+async function reconcile(args) {
+  const { options, positional } = parseOptions(args, { "--pr": "value", "--repo": "value" });
+  requireCount(positional, 1, 1, "reconcile");
+  const repoRoot = await repository(options.repo);
+  const state = await reconcileRun(repoRoot, positional[0], { prUrl: options.pr });
+  printRunResult(state);
+}
+
 async function watch(args) {
   const { options, positional } = parseOptions(args, { "--repo": "value", "--quiet": "boolean" });
   requireCount(positional, 1, 1, "watch");
@@ -360,6 +372,7 @@ async function wizard() {
       { name: "Preview a task (dry run)", value: "dry-run" },
       { name: "Validate a task", value: "validate" },
       { name: "Resume an interrupted run", value: "resume" },
+      { name: "Reconcile interrupted PR delivery", value: "reconcile" },
       { name: "Watch a run", value: "watch" },
       { name: "List runs", value: "list" },
       { name: "Inspect a run", value: "inspect" },
@@ -370,9 +383,10 @@ async function wizard() {
 
   if (action === "exit") return;
   if (action === "list") return list([]);
-  if (["resume", "watch", "inspect", "cleanup"].includes(action)) {
+  if (["resume", "reconcile", "watch", "inspect", "cleanup"].includes(action)) {
     const runId = await chooseRunId(action);
     if (action === "resume") return resume([runId]);
+    if (action === "reconcile") return reconcile([runId]);
     if (action === "watch") return watch([runId]);
     if (action === "inspect") return inspect([runId]);
     const approved = await confirm({ message: `Force-remove the worktree for ${runId}?`, default: false });
@@ -415,6 +429,8 @@ async function main(argv) {
       return run(args);
     case "resume":
       return resume(args);
+    case "reconcile":
+      return reconcile(args);
     case "watch":
       return watch(args);
     case "list":

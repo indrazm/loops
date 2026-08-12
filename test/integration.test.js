@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createRun, executeRun, planRun, resumeRun } from "../src/controller.js";
+import { createRun, executeRun, planRun, reconcileRun, resumeRun } from "../src/controller.js";
 import { pathExists, removeWorktree } from "../src/git.js";
 import { acquireRunLock, listStates, loadState, saveFeedback, saveState } from "../src/storage.js";
 import { loadTask } from "../src/task.js";
@@ -164,6 +164,7 @@ test("CLI help explains the non-interactive agent contract", async () => {
   for (const output of outputs) {
     assert.match(output.stdout, /Agent workflow \(non-interactive\):/);
     assert.match(output.stdout, /loops run tasks\/change\.task\.json --quiet/);
+    assert.match(output.stdout, /reconcile <run-id>/);
     assert.match(output.stdout, /Minimal task:/);
     assert.match(output.stdout, /Only status "success"/);
     assert.match(output.stdout, /Inspect before cleanup/);
@@ -716,5 +717,84 @@ fi
   } finally {
     if (previousGh === undefined) delete process.env.LOOPS_GH_PATH;
     else process.env.LOOPS_GH_PATH = previousGh;
+  }
+});
+
+test("reconcile recovers interrupted PR delivery only for the exact verified remote head", async () => {
+  const root = await makeRepository();
+  const remote = await mkdtemp(path.join(os.tmpdir(), "loops-remote-"));
+  await exec("git", ["init", "--bare", "-q"], { cwd: remote });
+  await exec("git", ["remote", "add", "origin", remote], { cwd: root });
+  const base = (await exec("git", ["branch", "--show-current"], { cwd: root })).stdout.trim();
+  await exec("git", ["push", "-q", "origin", `HEAD:refs/heads/${base}`], { cwd: root });
+
+  const fakeGh = path.join(root, "fake-gh-reconcile");
+  await writeFile(
+    fakeGh,
+    `#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf '%s\n' 'https://github.com/example/project/pull/50'
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  head=\${FAKE_GH_HEAD:-$(git rev-parse HEAD)}
+  branch=$(git branch --show-current)
+  printf '{"url":"%s","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "$3" "$head" "$branch" "$FAKE_GH_BASE"
+else
+  printf '%s\n' "unexpected gh arguments: $*" >&2
+  exit 1
+fi
+`,
+    { mode: 0o755 },
+  );
+  const taskPath = await writeTask(root, {
+    delivery: {
+      mode: "pr",
+      commitMessage: "Implement reconciliation fixture",
+      remote: "origin",
+      base,
+      branchPrefix: "loops",
+      title: "Reconciliation fixture",
+    },
+  });
+  const previousGh = process.env.LOOPS_GH_PATH;
+  const previousBase = process.env.FAKE_GH_BASE;
+  const previousHead = process.env.FAKE_GH_HEAD;
+  process.env.LOOPS_GH_PATH = fakeGh;
+  process.env.FAKE_GH_BASE = base;
+  try {
+    await withFakeEnvironment(root, "pass", async () => {
+      const context = await createRun(taskPath, { cwd: root });
+      const completed = await executeRun(context);
+      completed.status = "cancelled";
+      completed.error = "Run cancelled during delivery";
+      completed.delivery.status = "cancelled";
+      delete completed.completedAt;
+      await saveState(context.paths, completed);
+
+      process.env.FAKE_GH_HEAD = "0000000000000000000000000000000000000000";
+      await assert.rejects(
+        reconcileRun(root, completed.id, { prUrl: "https://github.com/example/project/pull/51" }),
+        /head does not match delivered commit/,
+      );
+      assert.equal((await loadState(root, completed.id)).state.status, "cancelled");
+
+      delete process.env.FAKE_GH_HEAD;
+      const reconciled = await reconcileRun(root, completed.id, {
+        prUrl: "https://github.com/example/project/pull/51",
+      });
+      assert.equal(reconciled.status, "success");
+      assert.equal(reconciled.delivery.status, "success");
+      assert.equal(reconciled.delivery.prUrl, "https://github.com/example/project/pull/51");
+      assert.equal(reconciled.delivery.reconciledAt, reconciled.delivery.completedAt);
+      const events = (await readFile(context.paths.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.ok(events.some((event) => event.type === "delivery.reconciled"));
+      await removeWorktree({ repoRoot: root, worktreePath: reconciled.worktreePath });
+    });
+  } finally {
+    if (previousGh === undefined) delete process.env.LOOPS_GH_PATH;
+    else process.env.LOOPS_GH_PATH = previousGh;
+    if (previousBase === undefined) delete process.env.FAKE_GH_BASE;
+    else process.env.FAKE_GH_BASE = previousBase;
+    if (previousHead === undefined) delete process.env.FAKE_GH_HEAD;
+    else process.env.FAKE_GH_HEAD = previousHead;
   }
 });

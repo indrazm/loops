@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { runAgent } from "./agent.js";
-import { deliverRun } from "./delivery.js";
+import { deliverRun, reconcilePullRequest } from "./delivery.js";
 import { ConfigError, PreparationError } from "./errors.js";
 import { buildFeedback, buildPrompt, evaluateStop, verificationFingerprintSummary } from "./evidence.js";
 import {
@@ -289,6 +289,50 @@ export async function resumeRun(repoRoot, runId, { taskPath } = {}) {
   state.status = "running";
   await saveState(paths, state);
   return { state, paths, task, feedback: await readFeedback(paths) };
+}
+
+export async function reconcileRun(repoRoot, runId, { prUrl } = {}) {
+  const { state, paths } = await loadState(repoRoot, runId);
+  if (state.status === "success") return state;
+  if (!state.worktreeEnabled || !(await pathExists(state.worktreePath))) {
+    throw new PreparationError(`Run worktree no longer exists: ${state.worktreePath}`);
+  }
+  if (!state.taskConfig) throw new ConfigError(`Run ${runId} does not contain its normalized task configuration`);
+  const task = validateTask(state.taskConfig);
+  if (task.delivery.mode !== "pr") {
+    throw new ConfigError(`Run ${runId} does not use pull-request delivery`);
+  }
+  if (!state.history.at(-1)?.passed) {
+    throw new ConfigError(`Run ${runId} did not finish implementation with successful verification`);
+  }
+  if (!state.delivery?.commitHash || !state.delivery?.branch) {
+    throw new ConfigError(`Run ${runId} has no persisted verified delivery commit to reconcile`);
+  }
+  const pullRequestUrl = prUrl ?? state.delivery.prUrl;
+  if (!pullRequestUrl) throw new ConfigError(`Run ${runId} has no pull-request URL; pass one with --pr`);
+  if (!["delivering", "cancelled", "delivery_failed"].includes(state.status)) {
+    throw new ConfigError(`Run ${runId} has status ${state.status}; only interrupted PR delivery can be reconciled`);
+  }
+
+  const release = await acquireRunLock(paths);
+  try {
+    const previousStatus = state.status;
+    const delivery = await reconcilePullRequest({ state, task, prUrl: pullRequestUrl });
+    if (delivery.status !== "success") throw new ConfigError(delivery.error ?? "Pull-request reconciliation failed");
+    state.delivery = delivery;
+    delete state.error;
+    await appendEvent(paths, "delivery.reconciled", {
+      previousStatus,
+      commitHash: delivery.commitHash,
+      branch: delivery.branch,
+      prUrl: delivery.prUrl,
+      merged: delivery.merged,
+    });
+    await appendEvent(paths, "delivery.completed", { ...delivery, reconciled: true });
+    return completeRun(state, paths, "success");
+  } finally {
+    await release();
+  }
 }
 
 async function executeRunUnlocked(context, { onProgress = () => {}, signal } = {}) {

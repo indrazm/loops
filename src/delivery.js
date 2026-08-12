@@ -248,7 +248,7 @@ export function evaluatePullRequestState(pr, expectedHeadOid) {
   return { ready: reasons.length === 0, reasons, checks };
 }
 
-async function inspectPullRequest({ cwd, prUrl, expectedHeadOid, signal }) {
+export async function inspectPullRequest({ cwd, prUrl, expectedHeadOid, signal }) {
   const result = await command(
     process.env.LOOPS_GH_PATH || "gh",
     [
@@ -256,7 +256,7 @@ async function inspectPullRequest({ cwd, prUrl, expectedHeadOid, signal }) {
       "view",
       prUrl,
       "--json",
-      "url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,headRefOid,mergedAt,mergeCommit",
+      "url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,headRefOid,headRefName,baseRefName,mergedAt,mergeCommit",
     ],
     {
       cwd,
@@ -272,6 +272,87 @@ async function inspectPullRequest({ cwd, prUrl, expectedHeadOid, signal }) {
   } catch (error) {
     return { status: "failed", step: "Inspecting pull request", error: `Invalid gh JSON output: ${error.message}` };
   }
+}
+
+export async function reconcilePullRequest({ state, task, prUrl, signal }) {
+  const previous = state.delivery;
+  const commitHash = previous?.commitHash;
+  const branch = previous?.branch;
+  if (previous?.mode !== "pr" || !commitHash || !branch) {
+    return {
+      status: "failed",
+      step: "Loading delivery evidence",
+      error: "Run does not contain a persisted pull-request branch and verified delivery commit",
+    };
+  }
+
+  const snapshot = await gitSnapshot(state.worktreePath, signal);
+  if (snapshot.status !== "success") return snapshot;
+  if (snapshot.changes) {
+    return {
+      status: "failed",
+      step: "Inspecting delivery worktree",
+      error: "Delivery worktree has uncommitted changes and cannot be reconciled",
+    };
+  }
+  if (snapshot.commitHash !== commitHash) {
+    return {
+      status: "failed",
+      step: "Inspecting delivery worktree",
+      error: `Delivery worktree HEAD ${snapshot.commitHash} does not match persisted verified commit ${commitHash}`,
+    };
+  }
+
+  const remote = await git(["ls-remote", "--exit-code", task.delivery.remote, `refs/heads/${branch}`], {
+    cwd: state.worktreePath,
+    signal,
+    timeoutSeconds: 120,
+  });
+  if (remote.exitCode !== 0) return failed("Inspecting remote delivery branch", remote);
+  const remoteCommitHash = remote.stdout.trim().split(/\s+/)[0];
+  if (remoteCommitHash !== commitHash) {
+    return {
+      status: "failed",
+      step: "Inspecting remote delivery branch",
+      error: `Remote branch ${branch} is at ${remoteCommitHash || "an unknown commit"}, expected ${commitHash}`,
+    };
+  }
+
+  const inspected = await inspectPullRequest({
+    cwd: state.worktreePath,
+    prUrl,
+    expectedHeadOid: commitHash,
+    signal,
+  });
+  if (inspected.status !== "success") return inspected;
+  const reasons = [...inspected.readiness.reasons];
+  if (inspected.pr.headRefName && inspected.pr.headRefName !== branch) {
+    reasons.push(`pull-request branch is ${inspected.pr.headRefName}, expected ${branch}`);
+  }
+  if (inspected.pr.baseRefName && inspected.pr.baseRefName !== task.delivery.base) {
+    reasons.push(`pull-request base is ${inspected.pr.baseRefName}, expected ${task.delivery.base}`);
+  }
+  if (reasons.length) {
+    return {
+      status: "failed",
+      step: "Reconciling pull request",
+      error: `Pull request does not satisfy delivery requirements: ${reasons.join("; ")}`,
+      pr: inspected.pr,
+    };
+  }
+
+  const completedAt = new Date().toISOString();
+  return {
+    ...previous,
+    status: "success",
+    prUrl: inspected.pr.url ?? prUrl,
+    mergeReady: true,
+    merged: inspected.pr.state === "MERGED",
+    mergedAt: inspected.pr.mergedAt ?? undefined,
+    mergeCommit: inspected.pr.mergeCommit ?? undefined,
+    reconciledAt: completedAt,
+    completedAt,
+  };
 }
 
 async function deliverPullRequest({ state, task, signal, common, committed, onProgress }) {
