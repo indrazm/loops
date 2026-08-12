@@ -779,15 +779,28 @@ fi
       assert.equal((await loadState(root, completed.id)).state.status, "cancelled");
 
       delete process.env.FAKE_GH_HEAD;
+      await writeFile(path.join(completed.worktreePath, "follow-up.txt"), "verified follow-up\n");
+      await exec("git", ["add", "follow-up.txt"], { cwd: completed.worktreePath });
+      await exec("git", ["commit", "-qm", "verified follow-up"], { cwd: completed.worktreePath });
+      await exec("git", ["push", "-q", "origin", completed.delivery.branch], { cwd: completed.worktreePath });
+      await assert.rejects(
+        reconcileRun(root, completed.id, { prUrl: "https://github.com/example/project/pull/51" }),
+        /worktree HEAD .* does not match persisted verified commit/,
+      );
+
       const reconciled = await reconcileRun(root, completed.id, {
         prUrl: "https://github.com/example/project/pull/51",
+        verifyHead: true,
       });
       assert.equal(reconciled.status, "success");
       assert.equal(reconciled.delivery.status, "success");
       assert.equal(reconciled.delivery.prUrl, "https://github.com/example/project/pull/51");
       assert.equal(reconciled.delivery.reconciledAt, reconciled.delivery.completedAt);
+      assert.equal(reconciled.delivery.reconciliationVerification.passed, true);
+      assert.equal(reconciled.delivery.reconciliationVerification.commitHash, reconciled.delivery.commitHash);
       const events = (await readFile(context.paths.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
       assert.ok(events.some((event) => event.type === "delivery.reconciled"));
+      assert.ok(events.some((event) => event.type === "delivery.reverified"));
       await removeWorktree({ repoRoot: root, worktreePath: reconciled.worktreePath });
     });
   } finally {

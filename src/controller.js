@@ -291,7 +291,7 @@ export async function resumeRun(repoRoot, runId, { taskPath } = {}) {
   return { state, paths, task, feedback: await readFeedback(paths) };
 }
 
-export async function reconcileRun(repoRoot, runId, { prUrl } = {}) {
+export async function reconcileRun(repoRoot, runId, { prUrl, verifyHead = false } = {}) {
   const { state, paths } = await loadState(repoRoot, runId);
   if (state.status === "success") return state;
   if (!state.worktreeEnabled || !(await pathExists(state.worktreePath))) {
@@ -317,6 +317,89 @@ export async function reconcileRun(repoRoot, runId, { prUrl } = {}) {
   const release = await acquireRunLock(paths);
   try {
     const previousStatus = state.status;
+    const previousActivity = structuredClone(state.activity);
+    if (verifyHead) {
+      const statusBefore = await gitStatus(state.worktreePath);
+      if (statusBefore.trim()) {
+        throw new ConfigError(`Run ${runId} worktree must be clean before re-verifying its delivery head`);
+      }
+      const commitHash = await verifyGitReference(state.worktreePath, "HEAD");
+      state.status = "verifying";
+      state.activity = {
+        ...state.activity,
+        phase: "verifying",
+        message: "Re-verifying current delivery head",
+        startedAt: now(),
+        checks: task.verification.map((check) => ({
+          name: check.name,
+          type: check.type,
+          provider: check.provider,
+          status: "waiting",
+        })),
+      };
+      await saveState(paths, state);
+      const verification = await runVerification({
+        cwd: state.worktreePath,
+        checks: task.verification,
+        goal: task.goal,
+        baseCommit: state.baseCommit,
+        changeSummary: statusBefore,
+        reviewHistory: summarizeReviewHistory(state.history),
+        timeoutSeconds: task.limits.timeoutSeconds,
+        maxOutputChars: task.limits.maxOutputChars,
+        onCheckStarted: async (check, index) => {
+          state.activity.checks[index] = { ...state.activity.checks[index], status: "running", startedAt: now() };
+          state.activity.message = `Re-verifying: ${check.name}`;
+          await saveState(paths, state);
+        },
+        onCheckCompleted: async (check, index) => {
+          state.activity.checks[index] = {
+            ...state.activity.checks[index],
+            status: check.passed ? "passed" : "failed",
+            passed: check.passed,
+            durationMs: check.durationMs,
+          };
+          await saveState(paths, state);
+        },
+      });
+      const statusAfter = await gitStatus(state.worktreePath);
+      const headAfter = await verifyGitReference(state.worktreePath, "HEAD");
+      state.status = previousStatus;
+      state.activity = previousActivity;
+      if (!verification.passed) {
+        await saveState(paths, state);
+        const failedChecks = verification.checks.filter((check) => !check.passed).map((check) => check.name);
+        throw new ConfigError(
+          `Current delivery head failed verification: ${failedChecks.join(", ") || "unknown check"}`,
+        );
+      }
+      if (statusAfter.trim() || headAfter !== commitHash) {
+        await saveState(paths, state);
+        throw new ConfigError(`Run ${runId} worktree changed while its delivery head was being verified`);
+      }
+      state.delivery = {
+        ...state.delivery,
+        commitHash,
+        reconciliationVerification: {
+          passed: true,
+          commitHash,
+          checks: verification.checks,
+          completedAt: now(),
+        },
+      };
+      await saveState(paths, state);
+      await appendEvent(paths, "delivery.reverified", {
+        commitHash,
+        checks: verification.checks.map(({ name, type, provider, passed, exitCode, timedOut }) => ({
+          name,
+          type,
+          provider,
+          passed,
+          exitCode,
+          timedOut,
+        })),
+      });
+    }
     const delivery = await reconcilePullRequest({ state, task, prUrl: pullRequestUrl });
     if (delivery.status !== "success") throw new ConfigError(delivery.error ?? "Pull-request reconciliation failed");
     state.delivery = delivery;

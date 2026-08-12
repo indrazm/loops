@@ -43,9 +43,10 @@ Commands:
   resume <run-id> [--task <task-file>] [--repo <path>] [--quiet]
       Continue an incomplete, non-terminal run.
 
-  reconcile <run-id> [--pr <url>] [--repo <path>]
+  reconcile <run-id> [--pr <url>] [--verify-head] [--repo <path>]
       Recover interrupted PR delivery from persisted verification, the exact
       pushed commit, and current GitHub checks. Use --pr for a follow-up PR.
+      --verify-head reruns configured gates before accepting a newer clean head.
 
   watch <run-id> [--repo <path>] [--quiet]
       Monitor a run started by another process.
@@ -245,10 +246,17 @@ async function resume(args) {
 }
 
 async function reconcile(args) {
-  const { options, positional } = parseOptions(args, { "--pr": "value", "--repo": "value" });
+  const { options, positional } = parseOptions(args, {
+    "--pr": "value",
+    "--verify-head": "boolean",
+    "--repo": "value",
+  });
   requireCount(positional, 1, 1, "reconcile");
   const repoRoot = await repository(options.repo);
-  const state = await reconcileRun(repoRoot, positional[0], { prUrl: options.pr });
+  const state = await reconcileRun(repoRoot, positional[0], {
+    prUrl: options.pr,
+    verifyHead: options["verify-head"],
+  });
   printRunResult(state);
 }
 

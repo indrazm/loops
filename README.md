@@ -221,9 +221,10 @@ If PR delivery is interrupted after a verified commit was pushed, reconcile it w
 ```sh
 loops reconcile <run-id>
 loops reconcile <run-id> --pr https://github.com/owner/repository/pull/123
+loops reconcile <run-id> --pr https://github.com/owner/repository/pull/123 --verify-head
 ```
 
-Reconciliation succeeds only when the worktree is clean, its HEAD and the remote branch both equal the persisted verified delivery commit, and the selected PR has that exact head with successful checks and satisfied review requirements. Use `--pr` when a follow-up PR was opened for a commit pushed after the original PR merged.
+Reconciliation succeeds only when the worktree is clean, its HEAD and the remote branch both equal the persisted verified delivery commit, and the selected PR has that exact head with successful checks and satisfied review requirements. Use `--pr` when a follow-up PR was opened for a commit pushed after the original PR merged. If a manual recovery added a focused follow-up commit, `--verify-head` reruns every configured gate on the clean current head before replacing the persisted commit evidence.
 
 ### Compatibility
 
@@ -238,7 +239,7 @@ loops init [task-file] [--interactive | --defaults]
 loops validate <task-file>
 loops run <task-file> [--dry-run] [--no-worktree] [--quiet]
 loops resume <run-id> [--task <task-file>] [--repo <path>] [--quiet]
-loops reconcile <run-id> [--pr <url>] [--repo <path>]
+loops reconcile <run-id> [--pr <url>] [--verify-head] [--repo <path>]
 loops watch <run-id> [--repo <path>] [--quiet]
 loops list [--repo <path>]
 loops inspect <run-id> [--repo <path>]
