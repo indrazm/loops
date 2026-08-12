@@ -34,6 +34,27 @@ function summarizeAgent(agent, maximum) {
   };
 }
 
+function summarizeReviewHistory(history) {
+  return history.flatMap((record) =>
+    (record.verification?.checks ?? [])
+      .filter((check) => check.type === "agent")
+      .map((check) => ({
+        iteration: record.iteration,
+        name: check.name,
+        passed: check.passed,
+        verdict: check.verdict
+          ? {
+              passed: check.verdict.passed,
+              summary: check.verdict.summary,
+              evidence: check.verdict.evidence ?? [],
+              blockingFindings: check.verdict.blockingFindings ?? [],
+              advisories: check.verdict.advisories ?? [],
+            }
+          : null,
+      })),
+  );
+}
+
 async function completeRun(state, paths, status) {
   state.status = status;
   state.completedAt = now();
@@ -342,11 +363,15 @@ async function executeRunUnlocked(context, { onProgress = () => {}, signal } = {
     };
     await saveState(paths, state);
     onProgress({ type: "activity.updated", runId: state.id, task: state.task, activity: state.activity });
+    const reviewChangeSummary = await gitStatus(state.worktreePath);
     let verificationActivityWrites = Promise.resolve();
     const verification = await runVerification({
       cwd: state.worktreePath,
       checks: task.verification,
       goal: task.goal,
+      baseCommit: state.baseCommit,
+      changeSummary: reviewChangeSummary,
+      reviewHistory: summarizeReviewHistory(state.history),
       timeoutSeconds: task.limits.timeoutSeconds,
       maxOutputChars: task.limits.maxOutputChars,
       signal,
@@ -393,7 +418,14 @@ async function executeRunUnlocked(context, { onProgress = () => {}, signal } = {
         passed,
         exitCode,
         timedOut,
-        verdict: verdict ? { passed: verdict.passed, summary: verdict.summary } : undefined,
+        verdict: verdict
+          ? {
+              passed: verdict.passed,
+              summary: verdict.summary,
+              blockingFindings: verdict.blockingFindings,
+              advisories: verdict.advisories,
+            }
+          : undefined,
       })),
     });
     await saveState(paths, state);

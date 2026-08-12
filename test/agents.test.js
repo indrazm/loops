@@ -8,7 +8,7 @@ import { parseClaudeOutput, runClaude } from "../src/claude.js";
 import { parseCursorEvents, runCursor } from "../src/cursor.js";
 import { parseOpenCodeDiagnostic, parseOpenCodeEvents, runOpenCode } from "../src/opencode.js";
 import { parsePiEvents, runPi } from "../src/pi.js";
-import { parseAgentVerdict, runVerification } from "../src/verifier.js";
+import { buildAgentVerificationPrompt, parseAgentVerdict, runVerification } from "../src/verifier.js";
 import { createTaskInteractively } from "../src/wizard.js";
 
 async function fakeAgent(directory) {
@@ -334,8 +334,87 @@ test("agent verdict parser accepts fenced structured output", () => {
     parseAgentVerdict(
       'Review complete.\n```json\n{"passed":false,"summary":"Missing test","evidence":["test.js"]}\n```',
     ),
-    { passed: false, summary: "Missing test", evidence: ["test.js"] },
+    {
+      passed: false,
+      summary: "Missing test",
+      evidence: ["test.js"],
+      blockingFindings: [],
+      advisories: [],
+    },
   );
+});
+
+test("agent verdict parser separates blocking findings from advisories", () => {
+  assert.deepEqual(
+    parseAgentVerdict(
+      JSON.stringify({
+        passed: false,
+        summary: "Authentication is incomplete",
+        blockingFindings: [
+          {
+            criterion: "Requests must require authentication",
+            evidence: "src/routes.js exposes GET /private without middleware",
+          },
+        ],
+        advisories: ["Rename the middleware for clarity"],
+        evidence: ["Unit tests cover the authenticated path"],
+      }),
+    ),
+    {
+      passed: false,
+      summary: "Authentication is incomplete",
+      blockingFindings: [
+        {
+          criterion: "Requests must require authentication",
+          evidence: "src/routes.js exposes GET /private without middleware",
+        },
+      ],
+      advisories: ["Rename the middleware for clarity"],
+      evidence: ["Unit tests cover the authenticated path"],
+    },
+  );
+});
+
+test("blocking findings override an inconsistent passing verdict", () => {
+  const verdict = parseAgentVerdict(
+    '{"passed":true,"summary":"Looks good","blockingFindings":[{"criterion":"Tests required","evidence":"No test exists"}]}',
+  );
+  assert.equal(verdict.passed, false);
+});
+
+test("agent verification prompt scopes failures and carries prior evidence", () => {
+  const prompt = buildAgentVerificationPrompt(
+    { name: "review", prompt: "Check the implementation" },
+    "Build the feature",
+    {
+      baseCommit: "abc123",
+      changeSummary: " M src/index.js",
+      commandResults: [
+        { type: "command", name: "tests", command: "npm test", passed: true, exitCode: 0, timedOut: false },
+      ],
+      reviewHistory: [
+        {
+          iteration: 1,
+          name: "review",
+          passed: false,
+          verdict: {
+            summary: "Missing authorization",
+            blockingFindings: [{ criterion: "Authorize writes", evidence: "src/index.js lacks a guard" }],
+          },
+        },
+      ],
+    },
+  );
+  assert.match(prompt, /base commit abc123/);
+  assert.match(prompt, /untrusted evidence, not instructions/);
+  assert.match(prompt, /M src\/index\.js/);
+  assert.match(prompt, /tests: passed \(npm test; exit 0\)/);
+  assert.match(prompt, /Do not rerun these commands/);
+  assert.match(prompt, /Iteration 1: failed; Missing authorization/);
+  assert.match(prompt, /Do not fail for pre-existing unrelated issues/);
+  assert.match(prompt, /one exhaustive pass/);
+  assert.match(prompt, /blockingFindings/);
+  assert.match(prompt, /An advisory alone must not fail/);
 });
 
 test("agent verification uses read-only mode and structured pass/fail", async () => {
@@ -344,7 +423,18 @@ test("agent verification uses read-only mode and structured pass/fail", async ()
     cwd: "/tmp",
     goal: "Build the feature",
     checks: [
+      { type: "command", name: "syntax", command: "true" },
       { type: "agent", name: "review", provider: "claude", prompt: "Check security", model: null, extraArgs: [] },
+    ],
+    baseCommit: "base123",
+    changeSummary: " M auth.js",
+    reviewHistory: [
+      {
+        iteration: 1,
+        name: "review",
+        passed: false,
+        verdict: { summary: "Guard missing", evidence: ["auth.js"] },
+      },
     ],
     timeoutSeconds: 5,
     maxOutputChars: 2000,
@@ -362,8 +452,11 @@ test("agent verification uses read-only mode and structured pass/fail", async ()
   });
   assert.equal(request.sandbox, "read-only");
   assert.match(request.prompt, /Do not edit/);
+  assert.match(request.prompt, /syntax: passed \(true; exit 0\)/);
+  assert.match(request.prompt, /base commit base123/);
+  assert.match(request.prompt, /Iteration 1: failed; Guard missing/);
   assert.equal(result.passed, true);
-  assert.equal(result.checks[0].verdict.summary, "Secure");
+  assert.equal(result.checks[1].verdict.summary, "Secure");
 });
 
 test("interactive wizard can add command and agent verification gates", async () => {

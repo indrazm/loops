@@ -128,17 +128,36 @@ Use agent gates for semantic, architecture, UX, or security review:
 }
 ```
 
-Agent gates run in read-only or plan mode and must return a structured verdict:
+Agent gates run in read-only or plan mode. Loops supplies the run's base commit,
+changed paths, preceding command-gate results, and earlier verdicts from the same
+review gate. The reviewer is instructed to inspect the complete in-scope change
+without rerunning deterministic commands, and to separate acceptance failures
+from optional improvements.
+
+The preferred structured verdict is:
 
 ```json
 {
-  "passed": true,
-  "summary": "Concise conclusion",
-  "evidence": ["Specific file, behavior, or finding"]
+  "passed": false,
+  "summary": "One acceptance criterion remains unmet",
+  "blockingFindings": [
+    {
+      "criterion": "Exact acceptance criterion or repository rule",
+      "evidence": "Specific file and behavior"
+    }
+  ],
+  "advisories": ["Useful non-blocking improvement"],
+  "evidence": ["Passing evidence or relevant context"]
 }
 ```
 
-Agent judgments are probabilistic. Prefer at least one deterministic command gate.
+Set `passed` to `false` only when `blockingFindings` is non-empty. Advisories do
+not fail a run. The legacy `passed`, `summary`, and `evidence` shape remains
+accepted for existing agents and task files.
+
+Agent judgments are probabilistic. Prefer at least one deterministic command
+gate and place semantic agent gates after it so the reviewer receives the gate
+result.
 
 ### Limits and worktrees
 

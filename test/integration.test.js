@@ -91,6 +91,31 @@ printf '%s\\n' '{"type":"result","session_id":"review-session","result":"{\\"pas
   return executable;
 }
 
+async function makeIteratingFakeClaude(directory) {
+  const executable = path.join(directory, "fake-iterating-claude");
+  await writeFile(
+    executable,
+    `#!/bin/sh
+count=0
+if [ -f "$FAKE_CLAUDE_COUNT" ]; then count=$(sed -n '1p' "$FAKE_CLAUDE_COUNT"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_CLAUDE_COUNT"
+prompt=
+for argument in "$@"; do prompt=$argument; done
+printf '%s\n---PROMPT---\n' "$prompt" >> "$FAKE_CLAUDE_PROMPTS"
+if [ "$count" -eq 1 ]; then
+  final='{"passed":false,"summary":"Guard missing","blockingFindings":[{"criterion":"Protect writes","evidence":"result.txt lacks a guard marker"}],"advisories":[],"evidence":[]}'
+else
+  final='{"passed":true,"summary":"Guard fixed","blockingFindings":[],"advisories":[],"evidence":["result.txt"]}'
+fi
+escaped=$(printf '%s' "$final" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
+printf '{"type":"result","session_id":"review-session","result":"%s"}\n' "$escaped"
+`,
+    { mode: 0o755 },
+  );
+  return executable;
+}
+
 async function writeTask(root, overrides = {}) {
   const task = {
     name: "fixture-task",
@@ -284,6 +309,49 @@ test("controller accepts a structured agent verification gate", async () => {
   } finally {
     if (previousClaude === undefined) delete process.env.LOOPS_CLAUDE_PATH;
     else process.env.LOOPS_CLAUDE_PATH = previousClaude;
+  }
+});
+
+test("controller carries earlier findings into the next review iteration", async () => {
+  const root = await makeRepository();
+  const taskPath = await writeTask(root, {
+    verification: [
+      {
+        type: "agent",
+        name: "review",
+        provider: "claude",
+        prompt: "Confirm the complete implementation",
+      },
+    ],
+  });
+  const previous = {
+    executable: process.env.LOOPS_CLAUDE_PATH,
+    count: process.env.FAKE_CLAUDE_COUNT,
+    prompts: process.env.FAKE_CLAUDE_PROMPTS,
+  };
+  process.env.LOOPS_CLAUDE_PATH = await makeIteratingFakeClaude(root);
+  process.env.FAKE_CLAUDE_COUNT = path.join(root, "claude-count");
+  process.env.FAKE_CLAUDE_PROMPTS = path.join(root, "claude-prompts");
+  try {
+    await withFakeEnvironment(root, "pass", async () => {
+      const context = await createRun(taskPath, { cwd: root });
+      const state = await executeRun(context);
+      assert.equal(state.status, "success");
+      assert.equal(state.iteration, 2);
+      const prompts = await readFile(process.env.FAKE_CLAUDE_PROMPTS, "utf8");
+      assert.match(prompts, /Iteration 1: failed; Guard missing/);
+      assert.match(prompts, /Protect writes: result\.txt lacks a guard marker/);
+      await removeWorktree({ repoRoot: root, worktreePath: state.worktreePath });
+    });
+  } finally {
+    for (const [key, value] of Object.entries({
+      LOOPS_CLAUDE_PATH: previous.executable,
+      FAKE_CLAUDE_COUNT: previous.count,
+      FAKE_CLAUDE_PROMPTS: previous.prompts,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

@@ -49,6 +49,11 @@ Choose verification commands that actually exist in the repository. Prefer at le
 }
 ```
 
+Place semantic agent gates after deterministic command gates. Loops gives the
+reviewer the base commit, changed paths, preceding command results, and earlier
+verdicts for that gate. Blocking findings must cite an explicit criterion and
+concrete evidence; optional improvements are advisories and do not fail the run.
+
 Omitted optional fields receive the defaults implemented by Loops. Add provider, limits, session, worktree, or delivery configuration only when the task requires non-default behavior.
 
 If a starter file is useful, generate it without prompts:
