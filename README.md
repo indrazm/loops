@@ -11,7 +11,7 @@ For each iteration it:
 
 A run succeeds only when the agent exits successfully **and every gate passes**. Iteration, timeout, output, and no-progress limits keep runs bounded.
 
-Supported agents: **Codex, OpenCode, Claude Code, and Pi**.
+Supported agents: **Codex, OpenCode, Claude Code, Pi, and Cursor Agent**.
 
 Loops does not commit or publish by default. Tasks may opt into a verified commit or GitHub pull request; Loops never merges or deploys.
 
@@ -20,7 +20,7 @@ Loops does not commit or publish by default. Tasks may opt into a verified commi
 - Node.js 20.17 or newer
 - Git
 - macOS or Linux
-- At least one installed and authenticated CLI: `codex`, `opencode`, `claude`, or `pi`
+- At least one installed and authenticated CLI: `codex`, `opencode`, `claude`, `pi`, or `cursor-agent`
 
 ## Install
 
@@ -77,7 +77,7 @@ Only `status: "success"` means all verification passed.
 
 ### Agents
 
-Set `agent.provider` to `codex`, `opencode`, `claude`, or `pi`:
+Set `agent.provider` to `codex`, `opencode`, `claude`, `pi`, or `cursor`:
 
 ```json
 {
@@ -95,12 +95,13 @@ Set `agent.provider` to `codex`, `opencode`, `claude`, or `pi`:
 - **OpenCode:** `opencode run --dir <worktree> --format json`; write runs use `--auto`, reviews use its `plan` agent.
 - **Claude Code:** `claude -p --output-format json`; write runs use `acceptEdits`, reviews use `plan` mode.
 - **Pi:** `pi --mode json`; reviews allow only `read`, `grep`, `find`, and `ls` tools.
+- **Cursor Agent:** `cursor-agent --print --output-format stream-json`; write runs use Cursor's enabled sandbox with forced non-interactive approvals, while reviews use plan mode.
 
-Model identifiers are provider-specific. OpenCode expects `provider/model`; Pi accepts model patterns or `provider/model`; Codex and Claude use native identifiers.
+Model identifiers are provider-specific. OpenCode expects `provider/model`; Pi accepts model patterns or `provider/model`; Codex, Claude, and Cursor use native identifiers.
 
 `sessionStrategy` is `fresh` by default. Set it to `resume` to continue the provider session across iterations and resumed Loops runs.
 
-OpenCode and Pi do not provide a Codex-style filesystem sandbox. Loops starts them in an isolated worktree, but a worktree is not a security boundary; both CLIs retain the permissions of the Loops process.
+Loops pins every provider to its isolated worktree. Cursor's own worktree option is intentionally not used, avoiding nested worktrees. OpenCode and Pi do not provide a Codex-style filesystem sandbox; a Loops worktree is not a security boundary, and both CLIs retain the permissions of the Loops process.
 
 ### Verification
 
@@ -280,6 +281,7 @@ LOOPS_CODEX_PATH
 LOOPS_OPENCODE_PATH
 LOOPS_CLAUDE_PATH
 LOOPS_PI_PATH
+LOOPS_CURSOR_PATH
 LOOPS_GH_PATH
 ```
 

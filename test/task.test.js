@@ -99,6 +99,18 @@ test("legacy codex tasks normalize to the generic agent schema", () => {
   assert.deepEqual(task.verification[0], { type: "command", name: "tests", command: "npm test" });
 });
 
+test("Cursor is accepted for implementation and verification", () => {
+  const task = validateTask({
+    name: "cursor-task",
+    goal: "Build it with Cursor",
+    agent: { provider: "cursor", model: "sonnet-4-thinking" },
+    verification: [{ type: "agent", name: "review", provider: "cursor", prompt: "Check the implementation" }],
+  });
+  assert.equal(task.agent.provider, "cursor");
+  assert.equal(task.agent.model, "sonnet-4-thinking");
+  assert.equal(task.verification[0].provider, "cursor");
+});
+
 test("Pi is accepted for implementation and verification", () => {
   const task = validateTask({
     name: "pi-task",

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { getAgentRunner } from "../src/agent.js";
 import { parseClaudeOutput, runClaude } from "../src/claude.js";
+import { parseCursorEvents, runCursor } from "../src/cursor.js";
 import { parseOpenCodeDiagnostic, parseOpenCodeEvents, runOpenCode } from "../src/opencode.js";
 import { parsePiEvents, runPi } from "../src/pi.js";
 import { parseAgentVerdict, runVerification } from "../src/verifier.js";
@@ -47,8 +48,9 @@ test("Claude JSON output exposes session and result", () => {
   assert.equal(parsed.finalMessage, "Implemented");
 });
 
-test("agent registry exposes Pi", () => {
+test("agent registry exposes Pi and Cursor", () => {
   assert.equal(getAgentRunner("pi"), runPi);
+  assert.equal(getAgentRunner("cursor"), runCursor);
 });
 
 test("Pi JSON events expose session and final text", () => {
@@ -97,6 +99,35 @@ test("Pi JSON events fall back to agent_end text without message_end", () => {
   );
 
   assert.equal(parsed.finalMessage, "Fallback");
+});
+
+test("Cursor stream JSON exposes session, result, and provider errors", () => {
+  const parsed = parseCursorEvents(
+    [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "cursor-123" }),
+      JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "Working" }] },
+        session_id: "cursor-123",
+      }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Implemented",
+        session_id: "cursor-123",
+      }),
+    ].join("\n"),
+  );
+  assert.equal(parsed.sessionId, "cursor-123");
+  assert.equal(parsed.finalMessage, "Implemented");
+  assert.equal(parsed.providerError, undefined);
+  assert.equal(parsed.events.length, 3);
+
+  const failed = parseCursorEvents(
+    JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "Model unavailable" }),
+  );
+  assert.equal(failed.providerError, "Model unavailable");
 });
 
 test("OpenCode adapter builds non-interactive resume arguments", async () => {
@@ -193,6 +224,71 @@ test("Claude adapter maps read-only verification to plan mode", async () => {
   assert.deepEqual(args.slice(0, 5), ["-p", "--output-format", "json", "--permission-mode", "plan"]);
   assert.ok(args.includes("--resume"));
   assert.equal(result.sessionId, "claude-2");
+});
+
+test("Cursor adapter builds isolated non-interactive resume arguments", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "loop-cursor-"));
+  const executable = await fakeAgent(directory);
+  const argsPath = path.join(directory, "args");
+  process.env.LOOP_AGENT_ARGS = argsPath;
+  process.env.LOOP_AGENT_OUTPUT = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "cursor-2" }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }),
+  ].join("\n");
+  const result = await runCursor({
+    cwd: directory,
+    prompt: "build it",
+    sandbox: "workspace-write",
+    model: "sonnet-4-thinking",
+    sessionId: "cursor-1",
+    timeoutSeconds: 5,
+    executable,
+  });
+  const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+  assert.deepEqual(args, [
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--workspace",
+    directory,
+    "--trust",
+    "--model",
+    "sonnet-4-thinking",
+    "--resume",
+    "cursor-1",
+    "--force",
+    "--sandbox",
+    "enabled",
+    "build it",
+  ]);
+  assert.equal(result.provider, "cursor");
+  assert.equal(result.sessionId, "cursor-2");
+  assert.equal(result.finalMessage, "done");
+});
+
+test("Cursor adapter maps read-only verification to plan mode", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "loop-cursor-review-"));
+  const executable = await fakeAgent(directory);
+  const argsPath = path.join(directory, "args");
+  process.env.LOOP_AGENT_ARGS = argsPath;
+  process.env.LOOP_AGENT_OUTPUT = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "reviewed",
+    session_id: "cursor-review",
+  });
+  await runCursor({
+    cwd: directory,
+    prompt: "review it",
+    sandbox: "read-only",
+    timeoutSeconds: 5,
+    executable,
+  });
+  const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+  assert.ok(args.includes("plan"));
+  assert.ok(args.includes("enabled"));
+  assert.equal(args.includes("--force"), false);
 });
 
 test("Pi adapter builds non-interactive read-only resume arguments", async () => {

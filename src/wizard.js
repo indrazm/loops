@@ -6,6 +6,7 @@ const providerChoices = [
   { name: "OpenCode", value: "opencode" },
   { name: "Claude Code", value: "claude" },
   { name: "Pi", value: "pi" },
+  { name: "Cursor Agent", value: "cursor" },
 ];
 
 const required = (value) => (value.trim() ? true : "This value is required");
