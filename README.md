@@ -210,9 +210,11 @@ Pull-request configuration:
 }
 ```
 
-Git and GitHub authentication must already be configured. The implementation provider authors the title and description from the verified diff, monitors checks and review feedback with `gh`, and may prepare local fixes. Loops re-runs every verification gate before committing and pushing those fixes. Monitoring is bounded by `limits.maxIterations` and `limits.timeoutSeconds`.
+Git and GitHub authentication must already be configured. The implementation provider authors the title and description from the verified diff, monitors checks and review feedback with `gh`, and may prepare local fixes. Loops re-runs every verification gate before committing and pushing those fixes. It does not rerun the gates for an unchanged commit that was already verified. Monitoring is bounded by `limits.maxIterations` and `limits.timeoutSeconds`.
 
-A PR is complete when checks pass, it has no conflicts or requested changes, required reviews are satisfied, and the delivery agent reports no actionable feedback. Loops never merges the PR. Delivery failures preserve the worktree, commit, branch, PR, and evidence for recovery. Automatic delivery requires an isolated worktree.
+A PR is complete when checks pass, it has no conflicts or requested changes, required reviews are satisfied, and the delivery agent reports no actionable feedback. If a human merges it while Loops is monitoring, delivery also succeeds when GitHub reports that the merged PR head is the exact commit Loops pushed and its checks and review requirements are satisfied. Closed, unmerged PRs and merged PRs at another head fail delivery. Loops never merges the PR itself.
+
+Delivery steps, attempts, pull-request URL, and a heartbeat are persisted while monitoring, so `loops list`, `loops inspect`, and `loops watch` expose current progress during long provider or CI waits. Delivery failures preserve the worktree, commit, branch, PR, and evidence for recovery. Automatic delivery requires an isolated worktree.
 
 ### Compatibility
 

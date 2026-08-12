@@ -43,4 +43,39 @@ test("pull-request state requires successful checks and completed reviews", () =
   assert.match(blocked.reasons.join("; "), /mergeability is CONFLICTING/);
   assert.match(blocked.reasons.join("; "), /review changes are requested/);
   assert.match(blocked.reasons.join("; "), /checks failed/);
+
+  const wrongOpenHead = evaluatePullRequestState(
+    {
+      state: "OPEN",
+      isDraft: false,
+      mergeable: "MERGEABLE",
+      reviewDecision: "APPROVED",
+      headRefOid: "unexpected-head",
+      statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    },
+    "delivered-head",
+  );
+  assert.equal(wrongOpenHead.ready, false);
+  assert.match(wrongOpenHead.reasons.join("; "), /pull-request head does not match/);
+});
+
+test("a merged pull request is successful only for the delivered head", () => {
+  const merged = {
+    state: "MERGED",
+    isDraft: false,
+    mergeable: "UNKNOWN",
+    reviewDecision: "",
+    headRefOid: "delivered-head",
+    statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+  };
+
+  assert.deepEqual(evaluatePullRequestState(merged, "delivered-head"), {
+    ready: true,
+    reasons: [],
+    checks: ["passed"],
+  });
+
+  const wrongHead = evaluatePullRequestState(merged, "different-head");
+  assert.equal(wrongHead.ready, false);
+  assert.match(wrongHead.reasons.join("; "), /merged head does not match/);
 });

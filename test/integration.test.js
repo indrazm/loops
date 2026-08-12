@@ -590,7 +590,8 @@ if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
   printf '%s\\n' "$@" > "$LOOPS_GH_ARGS"
   printf '%s\\n' 'https://github.com/example/project/pull/42'
 elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  printf '%s\\n' '{"url":"https://github.com/example/project/pull/42","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}'
+  head=$(git rev-parse HEAD)
+  printf '{"url":"https://github.com/example/project/pull/42","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"","headRefOid":"%s","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}\\n' "$head"
 else
   printf '%s\\n' "unexpected gh arguments: $*" >&2
   exit 1
@@ -623,6 +624,7 @@ fi
       assert.equal(state.delivery.title, "Fixture pull request");
       assert.equal(state.delivery.attempts.length, 2);
       assert.equal(state.delivery.attempts[0].verification.passed, true);
+      assert.equal(state.delivery.attempts[1].verification, undefined);
       assert.match(state.delivery.branch, /^loops\/fixture-task-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$/);
       await exec("git", ["--git-dir", remote, "rev-parse", `refs/heads/${state.delivery.branch}`]);
       const deliveredFix = await exec("git", [
@@ -642,5 +644,77 @@ fi
     else process.env.LOOPS_GH_PATH = previousGh;
     if (previousGhArgs === undefined) delete process.env.LOOPS_GH_ARGS;
     else process.env.LOOPS_GH_ARGS = previousGhArgs;
+  }
+});
+
+test("delivery accepts a merged PR at the delivered head without rerunning unchanged verification", async () => {
+  const root = await makeRepository();
+  const remote = await mkdtemp(path.join(os.tmpdir(), "loops-remote-"));
+  await exec("git", ["init", "--bare", "-q"], { cwd: remote });
+  await exec("git", ["remote", "add", "origin", remote], { cwd: root });
+  const base = (await exec("git", ["branch", "--show-current"], { cwd: root })).stdout.trim();
+  await exec("git", ["push", "-q", "origin", `HEAD:refs/heads/${base}`], { cwd: root });
+
+  const fakeGh = path.join(root, "fake-gh-merged");
+  await writeFile(
+    fakeGh,
+    `#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf '%s\n' 'https://github.com/example/project/pull/43'
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  head=$(git rev-parse HEAD)
+  printf '{"url":"https://github.com/example/project/pull/43","state":"MERGED","isDraft":false,"mergeable":"UNKNOWN","reviewDecision":"","headRefOid":"%s","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}\n' "$head"
+else
+  printf '%s\n' "unexpected gh arguments: $*" >&2
+  exit 1
+fi
+`,
+    { mode: 0o755 },
+  );
+  const verificationCount = path.join(root, "verification-count");
+  const taskPath = await writeTask(root, {
+    verification: [
+      {
+        name: "result",
+        command: `printf x >> ${JSON.stringify(verificationCount)}; test "$(cat result.txt 2>/dev/null)" = ok`,
+      },
+    ],
+    delivery: {
+      mode: "pr",
+      commitMessage: "Implement merged fixture",
+      remote: "origin",
+      base,
+      branchPrefix: "loops",
+      title: "Merged fixture pull request",
+    },
+  });
+  const previousGh = process.env.LOOPS_GH_PATH;
+  process.env.LOOPS_GH_PATH = fakeGh;
+  try {
+    await withFakeEnvironment(root, "pass", async () => {
+      const context = await createRun(taskPath, { cwd: root });
+      const progressEvents = [];
+      const state = await executeRun(context, {
+        onProgress: (event) => progressEvents.push(structuredClone(event)),
+      });
+      assert.equal(state.status, "success");
+      assert.equal(state.delivery.status, "success");
+      assert.equal(state.delivery.merged, true);
+      assert.equal(state.delivery.mergeReady, true);
+      assert.equal(await readFile(verificationCount, "utf8"), "x");
+      assert.ok(
+        progressEvents.some(
+          (event) => event.type === "activity.updated" && event.activity.deliveryStep === "inspect-pr",
+        ),
+      );
+      const persisted = await loadState(root, state.id);
+      assert.equal(persisted.state.delivery.prUrl, "https://github.com/example/project/pull/43");
+      const events = (await readFile(context.paths.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.ok(events.some((event) => event.type === "delivery.progress" && event.step === "inspect-pr"));
+      await removeWorktree({ repoRoot: root, worktreePath: state.worktreePath });
+    });
+  } finally {
+    if (previousGh === undefined) delete process.env.LOOPS_GH_PATH;
+    else process.env.LOOPS_GH_PATH = previousGh;
   }
 });

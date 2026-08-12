@@ -226,12 +226,21 @@ function checkState(check) {
   return "pending";
 }
 
-export function evaluatePullRequestState(pr) {
+export function evaluatePullRequestState(pr, expectedHeadOid) {
   const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup.map(checkState) : [];
   const reasons = [];
-  if (pr.state !== "OPEN") reasons.push(`PR state is ${pr.state ?? "unknown"}`);
-  if (pr.isDraft) reasons.push("PR is still a draft");
-  if (pr.mergeable !== "MERGEABLE") reasons.push(`mergeability is ${pr.mergeable ?? "unknown"}`);
+  const state = String(pr.state ?? "").toUpperCase();
+  if (expectedHeadOid && pr.headRefOid !== expectedHeadOid) {
+    reasons.push(
+      `${state === "MERGED" ? "merged" : "pull-request"} head does not match delivered commit ${expectedHeadOid}`,
+    );
+  }
+  if (state === "OPEN") {
+    if (pr.isDraft) reasons.push("PR is still a draft");
+    if (pr.mergeable !== "MERGEABLE") reasons.push(`mergeability is ${pr.mergeable ?? "unknown"}`);
+  } else if (state !== "MERGED") {
+    reasons.push(`PR state is ${pr.state ?? "unknown"}`);
+  }
   if (pr.reviewDecision === "CHANGES_REQUESTED") reasons.push("review changes are requested");
   if (pr.reviewDecision === "REVIEW_REQUIRED") reasons.push("a required review is still pending");
   if (checks.includes("failed")) reasons.push("one or more checks failed");
@@ -239,10 +248,16 @@ export function evaluatePullRequestState(pr) {
   return { ready: reasons.length === 0, reasons, checks };
 }
 
-async function inspectPullRequest({ cwd, prUrl, signal }) {
+async function inspectPullRequest({ cwd, prUrl, expectedHeadOid, signal }) {
   const result = await command(
     process.env.LOOPS_GH_PATH || "gh",
-    ["pr", "view", prUrl, "--json", "url,state,isDraft,mergeable,reviewDecision,statusCheckRollup"],
+    [
+      "pr",
+      "view",
+      prUrl,
+      "--json",
+      "url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,headRefOid,mergedAt,mergeCommit",
+    ],
     {
       cwd,
       signal,
@@ -253,15 +268,26 @@ async function inspectPullRequest({ cwd, prUrl, signal }) {
   if (result.exitCode !== 0) return failed("Inspecting pull request", result);
   try {
     const pr = JSON.parse(result.stdout);
-    return { status: "success", pr, readiness: evaluatePullRequestState(pr) };
+    return { status: "success", pr, readiness: evaluatePullRequestState(pr, expectedHeadOid) };
   } catch (error) {
     return { status: "failed", step: "Inspecting pull request", error: `Invalid gh JSON output: ${error.message}` };
   }
 }
 
-async function deliverPullRequest({ state, task, signal, common, committed }) {
+async function deliverPullRequest({ state, task, signal, common, committed, onProgress }) {
   const config = task.delivery;
   const branch = `${branchSlug(config.branchPrefix)}/${branchSlug(task.name)}-${branchSlug(state.id)}`;
+  const report = (step, message, details = {}) =>
+    onProgress({
+      ...common,
+      ...committed,
+      status: "running",
+      step,
+      message,
+      branch,
+      ...details,
+    });
+  await report("create-branch", "Preparing pull-request branch");
   const validBranch = await git(["check-ref-format", "--branch", branch], { cwd: state.worktreePath, signal });
   if (validBranch.exitCode !== 0) return { ...common, ...committed, ...failed("Validating branch name", validBranch) };
 
@@ -270,9 +296,11 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
     return { ...common, ...committed, branch, ...failed("Creating delivery branch", createBranch) };
   }
 
+  await report("push-branch", "Pushing verified commit");
   const initialPush = await pushBranch({ cwd: state.worktreePath, remote: config.remote, branch, signal });
   if (initialPush.status !== "success") return { ...common, ...committed, branch, ...initialPush };
 
+  await report("author-pr", "Authoring pull request", { pushed: true });
   const metadataAgent = await invokeDeliveryAgent({
     task,
     state,
@@ -300,6 +328,7 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
   }
 
   const body = `${metadata.body}\n\n---\nCreated and monitored by Loops run \`${state.id}\`.`;
+  await report("create-pr", "Creating pull request", { pushed: true, title: metadata.title });
   const gh = await command(
     process.env.LOOPS_GH_PATH || "gh",
     ["pr", "create", "--base", config.base, "--head", branch, "--title", metadata.title, "--body", body],
@@ -339,7 +368,71 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
   let feedback;
   const attempts = [];
 
+  const success = (inspected) => ({
+    ...common,
+    status: "success",
+    commitHash: pushedCommitHash,
+    branch,
+    pushed: true,
+    prUrl,
+    title: metadata.title,
+    mergeReady: true,
+    merged: inspected.pr.state === "MERGED",
+    mergedAt: inspected.pr.mergedAt ?? undefined,
+    mergeCommit: inspected.pr.mergeCommit ?? undefined,
+    authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+    attempts,
+    completedAt: new Date().toISOString(),
+  });
+
+  const mergedFailure = (inspected) => ({
+    ...common,
+    status: "failed",
+    step: "Inspecting merged pull request",
+    error: `Merged pull request does not satisfy delivery requirements: ${inspected.readiness.reasons.join("; ")}`,
+    commitHash: pushedCommitHash,
+    branch,
+    pushed: true,
+    prUrl,
+    title: metadata.title,
+    mergeReady: false,
+    merged: true,
+    mergedAt: inspected.pr.mergedAt ?? undefined,
+    mergeCommit: inspected.pr.mergeCommit ?? undefined,
+    authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+    attempts,
+  });
+
   for (let iteration = 1; iteration <= task.limits.maxIterations; iteration += 1) {
+    await report(
+      "inspect-pr",
+      `Inspecting pull request (delivery iteration ${iteration}/${task.limits.maxIterations})`,
+      {
+        pushed: true,
+        prUrl,
+        title: metadata.title,
+        iteration,
+        attempts,
+      },
+    );
+    const initialInspection = await inspectPullRequest({
+      cwd: state.worktreePath,
+      prUrl,
+      expectedHeadOid: pushedCommitHash,
+      signal,
+    });
+    if (initialInspection.status === "success" && initialInspection.pr.state === "MERGED") {
+      if (initialInspection.readiness.ready) return success(initialInspection);
+      return mergedFailure(initialInspection);
+    }
+
+    await report("review-pr", `Reviewing pull request (delivery iteration ${iteration}/${task.limits.maxIterations})`, {
+      pushed: true,
+      prUrl,
+      title: metadata.title,
+      iteration,
+      attempts,
+    });
     const agent = await invokeDeliveryAgent({
       task,
       state,
@@ -380,6 +473,13 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
     const hasLocalUpdates = Boolean(snapshot.changes) || snapshot.commitHash !== pushedCommitHash;
 
     if (hasLocalUpdates) {
+      await report("verify-fixes", `Verifying pull-request fixes (delivery iteration ${iteration})`, {
+        pushed: true,
+        prUrl,
+        title: metadata.title,
+        iteration,
+        attempts,
+      });
       const verification = await verifyDeliveryChanges({ task, state, signal });
       attempt.verification = verification;
       if (verification.cancelled || signal?.aborted) {
@@ -412,15 +512,12 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
       continue;
     }
 
-    const verification = await verifyDeliveryChanges({ task, state, signal });
-    attempt.verification = verification;
-    if (!verification.passed) {
-      feedback = `Final local verification failed:\n${verificationFeedback(verification)}`;
-      attempt.feedback = feedback;
-      continue;
-    }
-
-    const inspected = await inspectPullRequest({ cwd: state.worktreePath, prUrl, signal });
+    const inspected = await inspectPullRequest({
+      cwd: state.worktreePath,
+      prUrl,
+      expectedHeadOid: pushedCommitHash,
+      signal,
+    });
     attempt.pullRequest = inspected;
     if (inspected.status !== "success") {
       feedback = inspected.error;
@@ -428,24 +525,13 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
       continue;
     }
     if (!inspected.readiness.ready) {
+      if (inspected.pr.state === "MERGED") return mergedFailure(inspected);
       feedback = `GitHub reports the PR is not merge-ready: ${inspected.readiness.reasons.join("; ")}`;
       attempt.feedback = feedback;
       continue;
     }
 
-    return {
-      ...common,
-      status: "success",
-      commitHash: pushedCommitHash,
-      branch,
-      pushed: true,
-      prUrl,
-      title: metadata.title,
-      mergeReady: true,
-      authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
-      attempts,
-      completedAt: new Date().toISOString(),
-    };
+    return success(inspected);
   }
 
   return {
@@ -464,7 +550,7 @@ async function deliverPullRequest({ state, task, signal, common, committed }) {
   };
 }
 
-export async function deliverRun({ state, task, signal }) {
+export async function deliverRun({ state, task, signal, onProgress = async () => {} }) {
   const config = task.delivery;
   if (!config || config.mode === "none") return { mode: "none", status: "skipped" };
 
@@ -472,6 +558,7 @@ export async function deliverRun({ state, task, signal }) {
     mode: config.mode,
     startedAt: new Date().toISOString(),
   };
+  await onProgress({ ...common, status: "running", step: "create-commit", message: "Creating verified commit" });
   const committed = await createCommit({
     cwd: state.worktreePath,
     message: config.commitMessage,
@@ -483,5 +570,5 @@ export async function deliverRun({ state, task, signal }) {
     return { ...common, ...committed, completedAt: new Date().toISOString() };
   }
 
-  return deliverPullRequest({ state, task, signal, common, committed });
+  return deliverPullRequest({ state, task, signal, common, committed, onProgress });
 }

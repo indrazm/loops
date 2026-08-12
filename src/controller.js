@@ -58,11 +58,13 @@ function summarizeReviewHistory(history) {
 async function completeRun(state, paths, status) {
   state.status = status;
   state.completedAt = now();
-  const successMessage = state.delivery?.prUrl
-    ? "All verification passed and pull request is merge-ready"
-    : state.delivery?.commitHash
-      ? "All verification passed and commit created"
-      : "All verification gates passed";
+  const successMessage = state.delivery?.merged
+    ? "All verification passed and pull request is merged"
+    : state.delivery?.prUrl
+      ? "All verification passed and pull request is merge-ready"
+      : state.delivery?.commitHash
+        ? "All verification passed and commit created"
+        : "All verification gates passed";
   state.activity = {
     ...state.activity,
     phase: status,
@@ -98,7 +100,42 @@ async function deliverSuccessfulRun(state, paths, task, signal, onProgress) {
   await appendEvent(paths, "delivery.started", { mode: task.delivery.mode });
   onProgress({ type: "activity.updated", runId: state.id, task: state.task, activity: state.activity });
 
-  state.delivery = await deliverRun({ state, task, signal });
+  let deliveryWrites = Promise.resolve();
+  const persistDeliveryProgress = (delivery) => {
+    deliveryWrites = deliveryWrites.then(async () => {
+      state.delivery = structuredClone(delivery);
+      state.activity = {
+        ...state.activity,
+        message: delivery.message,
+        deliveryStep: delivery.step,
+        deliveryIteration: delivery.iteration,
+        prUrl: delivery.prUrl,
+        heartbeatAt: now(),
+      };
+      await saveState(paths, state);
+      await appendEvent(paths, "delivery.progress", {
+        status: delivery.status,
+        step: delivery.step,
+        iteration: delivery.iteration,
+        prUrl: delivery.prUrl,
+      });
+      onProgress({ type: "activity.updated", runId: state.id, task: state.task, activity: state.activity });
+    });
+    return deliveryWrites;
+  };
+  const heartbeat = setInterval(() => {
+    deliveryWrites = deliveryWrites.then(async () => {
+      state.activity.heartbeatAt = now();
+      await saveState(paths, state);
+    });
+  }, 5000);
+  heartbeat.unref();
+  try {
+    state.delivery = await deliverRun({ state, task, signal, onProgress: persistDeliveryProgress });
+  } finally {
+    clearInterval(heartbeat);
+    await deliveryWrites;
+  }
   await appendEvent(paths, state.delivery.status === "success" ? "delivery.completed" : "delivery.failed", {
     ...state.delivery,
   });
