@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, open, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ConfigError } from "./errors.js";
-import { atomicWriteJson, now } from "./util.js";
+import { atomicWriteJson, now, TERMINAL_STATUSES } from "./util.js";
+
+const STALE_HEARTBEAT_MS = 15_000;
 
 export function loopPaths(repoRoot, runId) {
   const loopDir = path.join(repoRoot, ".loop");
@@ -36,6 +38,45 @@ async function existingLock(paths) {
     if (error.code === "ENOENT") return null;
     return {};
   }
+}
+
+export async function inspectRunExecution(paths, state, { at = Date.now() } = {}) {
+  if (TERMINAL_STATUSES.has(state.status)) return { status: "inactive" };
+
+  const lock = await existingLock(paths);
+  const heartbeatAt = state.activity?.heartbeatAt ?? state.updatedAt;
+  const heartbeatTime = heartbeatAt ? Date.parse(heartbeatAt) : Number.NaN;
+  const heartbeatAgeMs = Number.isFinite(heartbeatTime) ? Math.max(0, at - heartbeatTime) : null;
+  if (!lock) {
+    if (heartbeatAgeMs !== null && heartbeatAgeMs <= STALE_HEARTBEAT_MS) {
+      return { status: "starting", heartbeatAt, heartbeatAgeMs };
+    }
+    return {
+      status: "interrupted",
+      heartbeatAt,
+      heartbeatAgeMs,
+      message: "No executor owns this non-terminal run; use loops resume",
+    };
+  }
+  if (!processIsRunning(lock.pid)) {
+    return {
+      status: "interrupted",
+      pid: Number.isInteger(lock.pid) ? lock.pid : undefined,
+      heartbeatAt,
+      heartbeatAgeMs,
+      message: `${Number.isInteger(lock.pid) ? `Executor process ${lock.pid}` : "Executor process"} is no longer running; use loops resume`,
+    };
+  }
+  if (heartbeatAgeMs !== null && heartbeatAgeMs > STALE_HEARTBEAT_MS) {
+    return {
+      status: "stalled",
+      pid: lock.pid,
+      heartbeatAt,
+      heartbeatAgeMs,
+      message: `Executor process ${lock.pid} is running but its heartbeat is stale`,
+    };
+  }
+  return { status: "active", pid: lock.pid, heartbeatAt, heartbeatAgeMs };
 }
 
 export async function ensureRunNotActive(paths) {

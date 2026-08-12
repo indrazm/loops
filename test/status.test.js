@@ -89,3 +89,25 @@ test("status shows concise provider retry activity without raw logs", () => {
   assert.match(output, /Provider activity: 00:02 ago/);
   assert.doesNotMatch(output, /AI_APICallError/);
 });
+
+test("status renders interrupted execution without an active spinner", () => {
+  const lines = formatStatus(
+    {
+      id: "run-interrupted",
+      startedAt: "2026-08-11T00:00:00.000Z",
+      activity: {
+        phase: "interrupted",
+        message: "Executor process 123 is no longer running; use loops resume",
+        provider: "codex",
+        iteration: 1,
+        maxIterations: 5,
+        startedAt: "2026-08-11T00:00:00.000Z",
+      },
+    },
+    { at: Date.parse("2026-08-11T00:01:00.000Z"), spinner: "◐" },
+  );
+  const output = lines.join("\n");
+  assert.match(output, /Status: ■ Interrupted/);
+  assert.match(output, /use loops resume/);
+  assert.doesNotMatch(output, /Phase:/);
+});

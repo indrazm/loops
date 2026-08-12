@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createRun, executeRun, planRun, reconcileRun, resumeRun } from "../src/controller.js";
 import { pathExists, removeWorktree } from "../src/git.js";
-import { acquireRunLock, listStates, loadState, saveFeedback, saveState } from "../src/storage.js";
+import { acquireRunLock, inspectRunExecution, listStates, loadState, saveFeedback, saveState } from "../src/storage.js";
 import { loadTask } from "../src/task.js";
 
 const exec = promisify(execFile);
@@ -494,7 +494,57 @@ test("resume refuses to start while the run execution lock is active", async () 
   const context = await createRun(taskPath, { cwd: root });
   const release = await acquireRunLock(context.paths);
   try {
+    const execution = await inspectRunExecution(context.paths, context.state);
+    assert.equal(execution.status, "active");
     await assert.rejects(resumeRun(root, context.state.id), /already being executed/);
+  } finally {
+    await release();
+    await removeWorktree({ repoRoot: root, worktreePath: context.state.worktreePath });
+  }
+});
+
+test("list, inspect, and watch expose an orphaned non-terminal run as interrupted", async () => {
+  const root = await makeRepository();
+  const taskPath = await writeTask(root);
+  const context = await createRun(taskPath, { cwd: root });
+  await writeFile(
+    context.paths.lockPath,
+    `${JSON.stringify({ pid: 2_147_483_647, token: "stale", startedAt: new Date().toISOString() })}\n`,
+  );
+
+  const listed = JSON.parse((await execCli(["list", "--repo", root], { cwd: root })).stdout);
+  assert.equal(listed[0].status, "interrupted");
+  assert.equal(listed[0].persistedStatus, "running");
+  assert.equal(listed[0].execution.status, "interrupted");
+  assert.match(listed[0].current, /use loops resume/);
+
+  const inspected = JSON.parse((await execCli(["inspect", context.state.id, "--repo", root], { cwd: root })).stdout);
+  assert.equal(inspected.status, "interrupted");
+  assert.equal(inspected.persistedStatus, "running");
+  assert.equal(inspected.execution.status, "interrupted");
+
+  const watched = JSON.parse(
+    (await execCli(["watch", context.state.id, "--repo", root, "--quiet"], { cwd: root })).stdout,
+  );
+  assert.equal(watched.status, "interrupted");
+  assert.equal(watched.persistedStatus, "running");
+  assert.match(watched.activity.message, /use loops resume/);
+  await removeWorktree({ repoRoot: root, worktreePath: context.state.worktreePath });
+});
+
+test("execution health reports a live executor with a stale heartbeat as stalled", async () => {
+  const root = await makeRepository();
+  const taskPath = await writeTask(root);
+  const context = await createRun(taskPath, { cwd: root });
+  context.state.activity.heartbeatAt = "2026-08-11T00:00:00.000Z";
+  const release = await acquireRunLock(context.paths);
+  try {
+    const execution = await inspectRunExecution(context.paths, context.state, {
+      at: Date.parse("2026-08-11T00:00:20.000Z"),
+    });
+    assert.equal(execution.status, "stalled");
+    assert.equal(execution.pid, process.pid);
+    assert.equal(execution.heartbeatAgeMs, 20_000);
   } finally {
     await release();
     await removeWorktree({ repoRoot: root, worktreePath: context.state.worktreePath });

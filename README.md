@@ -296,6 +296,12 @@ See [`skills/operate-loops/SKILL.md`](skills/operate-loops/SKILL.md) for the reu
 
 State writes are atomic. Resume interrupted non-terminal runs with `loops resume <run-id>`.
 
+`loops list`, `loops inspect`, and `loops watch` inspect the execution lock and
+heartbeat as well as persisted state. A dead or missing executor is reported as
+`interrupted` with a resume instruction; a live executor whose heartbeat has not
+advanced for 15 seconds is reported as `stalled`. These are observations rather
+than terminal task statuses, so an interrupted run remains resumable.
+
 `loops cleanup <run-id>` force-removes only that worktree and keeps its logs. Inspect and preserve useful changes first. With delivery mode `none`, commit in the worktree and cherry-pick the commit, or copy the changes manually.
 
 ## Security

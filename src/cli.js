@@ -8,7 +8,7 @@ import { createRun, executeRun, planRun, reconcileRun, resumeRun } from "./contr
 import { ConfigError, LoopError, PreparationError } from "./errors.js";
 import { pathExists, removeWorktree, resolveRepoRoot } from "./git.js";
 import { LiveStatus } from "./status.js";
-import { initializeLoopDirectory, listStates, loadState, loopPaths } from "./storage.js";
+import { initializeLoopDirectory, inspectRunExecution, listStates, loadState, loopPaths } from "./storage.js";
 import { loadTask, STARTER_TASK } from "./task.js";
 import { json } from "./util.js";
 import { createTaskInteractively } from "./wizard.js";
@@ -144,6 +144,21 @@ function printRunResult(state) {
   );
 }
 
+function withExecutionObservation(state, execution) {
+  if (!["interrupted", "stalled"].includes(execution.status)) return { ...state, execution };
+  return {
+    ...state,
+    persistedStatus: state.status,
+    status: execution.status,
+    execution,
+    activity: {
+      ...state.activity,
+      phase: execution.status,
+      message: execution.message,
+    },
+  };
+}
+
 async function executeWithCancellation(context, display) {
   const controller = new AbortController();
   const cancel = () => {
@@ -268,12 +283,13 @@ async function watch(args) {
   const display = new LiveStatus({ quiet: options.quiet });
   let first = true;
   while (true) {
-    const { state } = await loadState(repoRoot, runId);
+    const { state, paths } = await loadState(repoRoot, runId);
+    const observed = withExecutionObservation(state, await inspectRunExecution(paths, state));
     if (first) {
-      display.startState(state);
+      display.startState(observed);
       first = false;
     } else {
-      display.setState(state);
+      display.setState(observed);
     }
     if (
       [
@@ -285,10 +301,11 @@ async function watch(args) {
         "provider_error",
         "delivery_failed",
         "timeout",
-      ].includes(state.status)
+        "interrupted",
+      ].includes(observed.status)
     ) {
-      display.stop(state);
-      if (options.quiet) printRunResult(state);
+      display.stop(observed);
+      if (options.quiet) printRunResult(observed);
       return;
     }
     await delay(1000);
@@ -300,18 +317,26 @@ async function list(args) {
   requireCount(positional, 0, 0, "list");
   const repoRoot = await repository(options.repo);
   const states = await listStates(repoRoot);
+  const observedStates = await Promise.all(
+    states.map(async (state) => {
+      const paths = loopPaths(repoRoot, state.id);
+      return withExecutionObservation(state, await inspectRunExecution(paths, state));
+    }),
+  );
   process.stdout.write(
     json(
-      states.map((state) => ({
+      observedStates.map((state) => ({
         id: state.id,
         task: state.task,
         status: state.status,
+        ...(state.persistedStatus ? { persistedStatus: state.persistedStatus } : {}),
         iteration: state.iteration,
         noProgress: state.noProgress,
         phase: state.activity?.phase ?? state.status,
         current: state.activity?.message,
         worktreePath: state.worktreePath,
         updatedAt: state.updatedAt,
+        execution: state.execution,
       })),
     ),
   );
@@ -321,8 +346,9 @@ async function inspect(args) {
   const { options, positional } = parseOptions(args, { "--repo": "value" });
   requireCount(positional, 1, 1, "inspect");
   const repoRoot = await repository(options.repo);
-  const { state } = await loadState(repoRoot, positional[0]);
-  process.stdout.write(json(state));
+  const { state, paths } = await loadState(repoRoot, positional[0]);
+  const observed = withExecutionObservation(state, await inspectRunExecution(paths, state));
+  process.stdout.write(json(observed));
 }
 
 async function cleanup(args) {
