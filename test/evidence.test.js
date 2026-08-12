@@ -1,14 +1,16 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { parseCodexEvents } from "../src/codex.js";
 import { buildFeedback, buildPrompt, evaluateStop } from "../src/evidence.js";
 
 test("Codex JSONL parser extracts thread and final message", () => {
-  const parsed = parseCodexEvents([
-    JSON.stringify({ type: "thread.started", thread_id: "thread-42" }),
-    "not json",
-    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Finished" } }),
-  ].join("\n"));
+  const parsed = parseCodexEvents(
+    [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-42" }),
+      "not json",
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Finished" } }),
+    ].join("\n"),
+  );
   assert.equal(parsed.threadId, "thread-42");
   assert.equal(parsed.finalMessage, "Finished");
   assert.equal(parsed.events.length, 2);
@@ -31,7 +33,9 @@ test("feedback truncates verification output", () => {
     iteration: 1,
     codex: { exitCode: 0, timedOut: false },
     verification: {
-      checks: [{ name: "tests", command: "npm test", passed: false, exitCode: 1, timedOut: false, output: "x".repeat(100) }],
+      checks: [
+        { name: "tests", command: "npm test", passed: false, exitCode: 1, timedOut: false, output: "x".repeat(100) },
+      ],
     },
     gitStatus: " M source.js",
     maxOutputChars: 20,

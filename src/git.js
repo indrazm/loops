@@ -11,7 +11,9 @@ async function git(args, cwd, timeoutSeconds = 60) {
 export async function resolveRepoRoot(cwd = process.cwd()) {
   const result = await git(["rev-parse", "--show-toplevel"], cwd);
   if (result.exitCode !== 0) {
-    throw new PreparationError(`Cannot resolve a Git repository from ${path.resolve(cwd)}: ${(result.stderr || result.processError || "git rev-parse failed").trim()}`);
+    throw new PreparationError(
+      `Cannot resolve a Git repository from ${path.resolve(cwd)}: ${(result.stderr || result.processError || "git rev-parse failed").trim()}`,
+    );
   }
   return path.resolve(result.stdout.trim());
 }
@@ -19,7 +21,9 @@ export async function resolveRepoRoot(cwd = process.cwd()) {
 export async function verifyGitReference(repoRoot, reference) {
   const result = await git(["rev-parse", "--verify", "--quiet", `${reference}^{commit}`], repoRoot);
   if (result.exitCode !== 0) {
-    throw new PreparationError(`Worktree base is not a valid commit: ${reference}. Create an initial commit or choose another worktree.base.`);
+    throw new PreparationError(
+      `Worktree base is not a valid commit: ${reference}. Create an initial commit or choose another worktree.base.`,
+    );
   }
   return result.stdout.trim();
 }
@@ -27,7 +31,9 @@ export async function verifyGitReference(repoRoot, reference) {
 export async function createWorktree({ repoRoot, worktreePath, base }) {
   const result = await git(["worktree", "add", "--detach", worktreePath, base], repoRoot);
   if (result.exitCode !== 0) {
-    throw new PreparationError(`Could not create worktree at ${worktreePath}: ${(result.stderr || result.processError || "git worktree add failed").trim()}`);
+    throw new PreparationError(
+      `Could not create worktree at ${worktreePath}: ${(result.stderr || result.processError || "git worktree add failed").trim()}`,
+    );
   }
   return { path: worktreePath };
 }
@@ -37,7 +43,9 @@ export async function removeWorktree({ repoRoot, worktreePath }) {
   // uncommitted output, so Git's force flag is required for successful runs.
   const result = await git(["worktree", "remove", "--force", worktreePath], repoRoot);
   if (result.exitCode !== 0) {
-    throw new PreparationError(`Could not remove worktree ${worktreePath}: ${(result.stderr || result.processError || "git worktree remove failed").trim()}`);
+    throw new PreparationError(
+      `Could not remove worktree ${worktreePath}: ${(result.stderr || result.processError || "git worktree remove failed").trim()}`,
+    );
   }
   await git(["worktree", "prune"], repoRoot);
 }
@@ -76,10 +84,12 @@ export async function repositoryFingerprint(cwd, verificationSummary) {
     }
   }
 
-  return hash(JSON.stringify({
-    diff: diff.stdout,
-    status: status.stdout,
-    untracked: untrackedEntries,
-    verification: verificationSummary,
-  }));
+  return hash(
+    JSON.stringify({
+      diff: diff.stdout,
+      status: status.stdout,
+      untracked: untrackedEntries,
+      verification: verificationSummary,
+    }),
+  );
 }
