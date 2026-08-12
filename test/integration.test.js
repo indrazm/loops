@@ -60,7 +60,7 @@ fi
 prompt=
 for argument in "$@"; do prompt=$argument; done
 case "$prompt" in
-  *"pull-request author"*) final='{"title":"Fixture pull request","body":"Creates and verifies result.txt."}' ;;
+  *"pull-request author"*) final='Creates and verifies result.txt.' ;;
   *"merge-readiness agent"*)
     if [ "$FAKE_CODEX_MODE" = "pr-fix" ] && [ ! -f review-fix.txt ]; then
       printf 'review fix\\n' > review-fix.txt
@@ -607,7 +607,7 @@ fi
       remote: "origin",
       base,
       branchPrefix: "loops",
-      title: "Fixture pull request",
+      title: "Configured fixture title",
     },
   });
   const previousGh = process.env.LOOPS_GH_PATH;
@@ -622,7 +622,7 @@ fi
       assert.equal(state.delivery.status, "success");
       assert.equal(state.delivery.prUrl, "https://github.com/example/project/pull/42");
       assert.equal(state.delivery.mergeReady, true);
-      assert.equal(state.delivery.title, "Fixture pull request");
+      assert.equal(state.delivery.title, "Configured fixture title");
       assert.equal(state.delivery.attempts.length, 2);
       assert.equal(state.delivery.attempts[0].verification.passed, true);
       assert.equal(state.delivery.attempts[1].verification, undefined);
@@ -637,7 +637,8 @@ fi
       assert.equal(deliveredFix.stdout.trim(), "review fix");
       const args = (await readFile(ghArgs, "utf8")).trim().split("\n");
       assert.deepEqual(args.slice(0, 7), ["pr", "create", "--base", base, "--head", state.delivery.branch, "--title"]);
-      assert.ok(args.includes("Fixture pull request"));
+      assert.ok(args.includes("Configured fixture title"));
+      assert.match(await readFile(ghArgs, "utf8"), /Creates and verifies result\.txt\./);
       await removeWorktree({ repoRoot: root, worktreePath: state.worktreePath });
     });
   } finally {

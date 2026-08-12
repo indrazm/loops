@@ -210,7 +210,7 @@ Pull-request configuration:
 }
 ```
 
-Git and GitHub authentication must already be configured. The implementation provider authors the title and description from the verified diff, monitors checks and review feedback with `gh`, and may prepare local fixes. Loops re-runs every verification gate before committing and pushing those fixes. It does not rerun the gates for an unchanged commit that was already verified. Monitoring is bounded by `limits.maxIterations` and `limits.timeoutSeconds`.
+Git and GitHub authentication must already be configured. Loops always uses the deterministic `delivery.title`; the configured implementation provider writes a free-form Markdown body from the verified diff and is never asked to encode PR metadata as JSON. The provider then monitors checks and review feedback with `gh` and may prepare local fixes. Loops re-runs every verification gate before committing and pushing those fixes. It does not rerun the gates for an unchanged commit that was already verified. Monitoring is bounded by `limits.maxIterations` and `limits.timeoutSeconds`.
 
 A PR is complete when checks pass, it has no conflicts or requested changes, required reviews are satisfied, and the delivery agent reports no actionable feedback. If a human merges it while Loops is monitoring, delivery also succeeds when GitHub reports that the merged PR head is the exact commit Loops pushed and its checks and review requirements are satisfied. Closed, unmerged PRs and merged PRs at another head fail delivery. Loops never merges the PR itself.
 

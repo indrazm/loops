@@ -81,20 +81,6 @@ function jsonCandidates(message) {
   return candidates;
 }
 
-export function parsePullRequestMetadata(message) {
-  for (const candidate of jsonCandidates(message)) {
-    try {
-      const value = JSON.parse(candidate);
-      if (typeof value.title !== "string" || !value.title.trim()) continue;
-      if (typeof value.body !== "string" || !value.body.trim()) continue;
-      return { title: value.title.trim(), body: value.body.trim() };
-    } catch {
-      // Try the next JSON fragment.
-    }
-  }
-  return null;
-}
-
 export function parseMergeReadyVerdict(message) {
   for (const candidate of jsonCandidates(message)) {
     try {
@@ -131,18 +117,17 @@ function summarizeAgent(agent, maximum) {
   };
 }
 
-function metadataPrompt({ task, state, branch, config }) {
+function bodyPrompt({ task, state, branch, config }) {
   return [
     "You are the pull-request author for a verified coding task.",
     "Inspect the repository and the complete diff from the base commit. Do not modify files, commit, push, create a PR, or merge anything.",
     `Task goal:\n${task.goal}`,
     `Base commit: ${state.baseCommit}`,
     `Head branch: ${branch}`,
-    `Suggested title: ${config.title}`,
+    `The pull-request title is fixed by configuration and will be: ${config.title}`,
     `Verification gates: ${task.verification.map((check) => check.name).join(", ")}`,
-    "Write a precise PR title and a useful Markdown body. Explain the motivation, important implementation details, tests performed, and noteworthy risks or follow-ups. Base every claim on the actual diff.",
-    "Return exactly one JSON object as the final response:",
-    '{"title":"concise PR title","body":"Markdown PR description"}',
+    "Write only the useful Markdown body for that pull request. Explain the motivation, important implementation details, tests performed, and noteworthy risks or follow-ups. Base every claim on the actual diff.",
+    "Do not return JSON and do not propose a different title. Your complete final response will be used directly as the pull-request body.",
   ].join("\n\n");
 }
 
@@ -382,18 +367,18 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
   if (initialPush.status !== "success") return { ...common, ...committed, branch, ...initialPush };
 
   await report("author-pr", "Authoring pull request", { pushed: true });
-  const metadataAgent = await invokeDeliveryAgent({
+  const bodyAgent = await invokeDeliveryAgent({
     task,
     state,
-    prompt: metadataPrompt({ task, state, branch, config }),
+    prompt: bodyPrompt({ task, state, branch, config }),
     sandbox: "read-only",
     signal,
   });
-  const metadata = parsePullRequestMetadata(metadataAgent.finalMessage);
-  if (metadataAgent.cancelled || signal?.aborted) {
+  const generatedBody = truncate(bodyAgent.finalMessage?.trim() ?? "", task.limits.maxOutputChars);
+  if (bodyAgent.cancelled || signal?.aborted) {
     return { ...common, ...committed, branch, pushed: true, status: "cancelled", step: "Authoring pull request" };
   }
-  if (!agentSucceeded(metadataAgent) || !metadata) {
+  if (!agentSucceeded(bodyAgent) || !generatedBody) {
     return {
       ...common,
       ...committed,
@@ -401,18 +386,18 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
       pushed: true,
       status: "failed",
       step: "Authoring pull request",
-      error: !agentSucceeded(metadataAgent)
-        ? `Pull-request authoring agent failed: ${output(metadataAgent)}`
-        : "Pull-request authoring agent returned malformed metadata",
-      authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+      error: !agentSucceeded(bodyAgent)
+        ? `Pull-request authoring agent failed: ${output(bodyAgent)}`
+        : "Pull-request authoring agent returned an empty body",
+      authoringAgent: summarizeAgent(bodyAgent, task.limits.maxOutputChars),
     };
   }
 
-  const body = `${metadata.body}\n\n---\nCreated and monitored by Loops run \`${state.id}\`.`;
-  await report("create-pr", "Creating pull request", { pushed: true, title: metadata.title });
+  const body = `${generatedBody}\n\n---\nCreated and monitored by Loops run \`${state.id}\`.`;
+  await report("create-pr", "Creating pull request", { pushed: true, title: config.title });
   const gh = await command(
     process.env.LOOPS_GH_PATH || "gh",
-    ["pr", "create", "--base", config.base, "--head", branch, "--title", metadata.title, "--body", body],
+    ["pr", "create", "--base", config.base, "--head", branch, "--title", config.title, "--body", body],
     {
       cwd: state.worktreePath,
       signal,
@@ -426,7 +411,7 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
       ...committed,
       branch,
       pushed: true,
-      authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+      authoringAgent: summarizeAgent(bodyAgent, task.limits.maxOutputChars),
       ...failed("Creating pull request", gh),
     };
   }
@@ -444,7 +429,7 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
     };
   }
 
-  let sessionId = metadataAgent.sessionId;
+  let sessionId = bodyAgent.sessionId;
   let pushedCommitHash = committed.commitHash;
   let feedback;
   const attempts = [];
@@ -456,12 +441,12 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
     branch,
     pushed: true,
     prUrl,
-    title: metadata.title,
+    title: config.title,
     mergeReady: true,
     merged: inspected.pr.state === "MERGED",
     mergedAt: inspected.pr.mergedAt ?? undefined,
     mergeCommit: inspected.pr.mergeCommit ?? undefined,
-    authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+    authoringAgent: summarizeAgent(bodyAgent, task.limits.maxOutputChars),
     attempts,
     completedAt: new Date().toISOString(),
   });
@@ -475,12 +460,12 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
     branch,
     pushed: true,
     prUrl,
-    title: metadata.title,
+    title: config.title,
     mergeReady: false,
     merged: true,
     mergedAt: inspected.pr.mergedAt ?? undefined,
     mergeCommit: inspected.pr.mergeCommit ?? undefined,
-    authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+    authoringAgent: summarizeAgent(bodyAgent, task.limits.maxOutputChars),
     attempts,
   });
 
@@ -491,7 +476,7 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
       {
         pushed: true,
         prUrl,
-        title: metadata.title,
+        title: config.title,
         iteration,
         attempts,
       },
@@ -510,7 +495,7 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
     await report("review-pr", `Reviewing pull request (delivery iteration ${iteration}/${task.limits.maxIterations})`, {
       pushed: true,
       prUrl,
-      title: metadata.title,
+      title: config.title,
       iteration,
       attempts,
     });
@@ -557,7 +542,7 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
       await report("verify-fixes", `Verifying pull-request fixes (delivery iteration ${iteration})`, {
         pushed: true,
         prUrl,
-        title: metadata.title,
+        title: config.title,
         iteration,
         attempts,
       });
@@ -624,9 +609,9 @@ async function deliverPullRequest({ state, task, signal, common, committed, onPr
     branch,
     pushed: true,
     prUrl,
-    title: metadata.title,
+    title: config.title,
     mergeReady: false,
-    authoringAgent: summarizeAgent(metadataAgent, task.limits.maxOutputChars),
+    authoringAgent: summarizeAgent(bodyAgent, task.limits.maxOutputChars),
     attempts,
   };
 }

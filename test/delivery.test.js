@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluatePullRequestState, parseMergeReadyVerdict, parsePullRequestMetadata } from "../src/delivery.js";
-
-test("pull-request metadata parser accepts fenced agent output", () => {
-  assert.deepEqual(
-    parsePullRequestMetadata(
-      'Drafted from the diff.\n```json\n{"title":"Improve auth","body":"## Summary\\nSafer auth."}\n```',
-    ),
-    { title: "Improve auth", body: "## Summary\nSafer auth." },
-  );
-});
+import { evaluatePullRequestState, parseMergeReadyVerdict } from "../src/delivery.js";
 
 test("merge-readiness parser requires a structured boolean verdict", () => {
   assert.deepEqual(parseMergeReadyVerdict('{"ready":false,"summary":"CI is pending","evidence":["build job"]}'), {
