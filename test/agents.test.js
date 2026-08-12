@@ -66,6 +66,39 @@ test("Pi JSON events expose session and final text", () => {
   assert.equal(parsed.events.length, 2);
 });
 
+test("Pi JSON events keep the authoritative message_end text", () => {
+  const parsed = parsePiEvents(
+    [
+      JSON.stringify({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: '{"title":"Ready","body":"Done"}' }] },
+      }),
+      JSON.stringify({
+        type: "agent_end",
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Let me inspect one more file." }],
+          },
+        ],
+      }),
+    ].join("\n"),
+  );
+
+  assert.equal(parsed.finalMessage, '{"title":"Ready","body":"Done"}');
+});
+
+test("Pi JSON events fall back to agent_end text without message_end", () => {
+  const parsed = parsePiEvents(
+    JSON.stringify({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Fallback" }] }],
+    }),
+  );
+
+  assert.equal(parsed.finalMessage, "Fallback");
+});
+
 test("OpenCode adapter builds non-interactive resume arguments", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "loop-opencode-"));
   const executable = await fakeAgent(directory);

@@ -15,7 +15,8 @@ function messageText(message) {
 export function parsePiEvents(stdout) {
   const events = [];
   let sessionId;
-  let finalMessage;
+  let authoritativeFinalMessage;
+  let fallbackFinalMessage;
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
@@ -24,19 +25,23 @@ export function parsePiEvents(stdout) {
       if (event.type === "session" && typeof event.id === "string") sessionId = event.id;
 
       const directMessage = messageText(event.message);
-      if (directMessage) finalMessage = directMessage;
+      if (event.type === "message_end" && directMessage) {
+        authoritativeFinalMessage = directMessage;
+      } else if (directMessage) {
+        fallbackFinalMessage = directMessage;
+      }
 
       if (event.type === "agent_end" && Array.isArray(event.messages)) {
         for (const message of event.messages) {
           const text = messageText(message);
-          if (text) finalMessage = text;
+          if (text) fallbackFinalMessage = text;
         }
       }
     } catch {
       // Preserve non-JSON output in stdout for diagnostics.
     }
   }
-  return { events, sessionId, finalMessage };
+  return { events, sessionId, finalMessage: authoritativeFinalMessage ?? fallbackFinalMessage };
 }
 
 export async function runPi({
